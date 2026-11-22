@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Prompt2App — 一句话生成你的应用</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<style>
+  html,body{height:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background-color:#080d18;background-image:radial-gradient(ellipse at 50% -18%,rgba(14,116,144,.20),transparent 42%),radial-gradient(ellipse at 100% 30%,rgba(76,29,149,.08),transparent 35%)}
+  .glass{background:rgba(15,23,42,.72);border:1px solid rgba(148,163,184,.13);box-shadow:0 12px 40px rgba(0,0,0,.12)}
+  .surface{background:rgba(15,23,42,.62);border:1px solid rgba(148,163,184,.12)}
+  .eyebrow{letter-spacing:.16em;text-transform:uppercase}
+  .card-hover{transition:transform .2s ease,border-color .2s ease,background-color .2s ease}
+  .card-hover:hover{transform:translateY(-3px);border-color:rgba(56,189,248,.4);background-color:rgba(15,23,42,.9)}
+  .primary-button{background:#4267ff;border:1px solid #4267ff}
+  .primary-button:hover{background:#3355e6;border-color:#3355e6}
+  .field-focus:focus{border-color:rgba(56,189,248,.65);box-shadow:0 0 0 3px rgba(14,165,233,.1)}
+  .hero-grid{background-image:linear-gradient(rgba(148,163,184,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(148,163,184,.035) 1px,transparent 1px);background-size:48px 48px;mask-image:linear-gradient(to bottom,black,transparent 85%)}
+  .mini-window{background:rgba(8,13,24,.92);border:1px solid rgba(148,163,184,.14);box-shadow:0 12px 30px rgba(0,0,0,.2)}
+  .mini-line{height:5px;border-radius:99px;background:rgba(148,163,184,.2)}
+  :focus-visible{outline:2px solid rgba(96,165,250,.8);outline-offset:3px}
+  ::-webkit-scrollbar{width:6px;height:6px}
+  ::-webkit-scrollbar-thumb{background:rgba(148,163,184,.25);border-radius:99px}
+  .step-dot{width:8px;height:8px;border-radius:99px;background:#334155;transition:.3s}
+  .step-dot.active{background:#38bdf8;box-shadow:0 0 8px #38bdf8}
+  .step-dot.done{background:#22c55e}
+  .fade-in{animation:fadeIn .25s ease}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  .pulse-dot{animation:pd 1.2s infinite}
+  @keyframes pd{50%{opacity:.35}}
+  @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}}
+  [x-cloak]{display:none!important}
+</style>
+</head>
+<body class="bg-slate-950 text-slate-200" x-data="p2a()" x-init="init()">
+
+<!-- ══════════════ 顶部导航 ══════════════ -->
+<header class="h-14 flex items-center justify-between px-4 md:px-8 border-b border-slate-800/70 bg-slate-950/80 backdrop-blur-xl sticky top-0 z-40">
+  <div class="flex items-center gap-2.5 cursor-pointer shrink-0" @click="go('home')">
+    <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-cyan-300 via-sky-500 to-indigo-500 flex items-center justify-center font-black text-slate-950 text-sm shadow-lg shadow-sky-500/20">P</div>
+    <span class="font-bold tracking-wide text-[15px]">Prompt<span class="text-sky-400">2</span>App</span>
+  </div>
+  <nav class="hidden md:flex items-center gap-1 text-[13px]" aria-label="主导航">
+    <button @click="go('home')" class="px-3.5 py-2 rounded-lg transition" :class="view==='home'?'bg-slate-800/80 text-sky-300':'text-slate-400 hover:text-slate-200'">首页</button>
+    <button @click="go('home');scrollToShowcase()" class="px-3.5 py-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 transition">预置成品</button>
+    <button @click="goDashboard()" class="px-3.5 py-2 rounded-lg transition" :class="view==='dashboard'?'bg-slate-800/80 text-sky-300':'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'">我的项目</button>
+  </nav>
+  <div class="flex items-center gap-2">
+    <span x-show="syncState==='syncing'" class="text-[11px] text-amber-300 hidden sm:flex items-center gap-1"><i class="w-1.5 h-1.5 rounded-full bg-amber-300 pulse-dot"></i>同步中</span>
+    <span x-show="syncState==='synced' && user" class="text-[11px] text-emerald-400 hidden sm:flex items-center gap-1"><i class="w-1.5 h-1.5 rounded-full bg-emerald-400"></i>已同步</span>
+    <template x-if="!user">
+      <button @click="goLogin()" class="text-xs px-4 py-2 rounded-lg primary-button text-white font-semibold transition">登录 / 注册</button>
+    </template>
+    <template x-if="user">
+      <div class="flex items-center gap-2">
+        <span class="text-xs px-2.5 py-1.5 rounded-lg bg-slate-800 text-slate-300 max-w-28 truncate" x-text="user.username"></span>
+        <button @click="logout()" class="text-xs px-2 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition">退出</button>
+      </div>
+    </template>
+  </div>
+</header>
+
+<div x-show="errorMessage" x-cloak class="fixed top-14 left-1/2 -translate-x-1/2 z-50 w-[min(92vw,40rem)] rounded-xl border border-rose-500/30 bg-slate-900 px-4 py-3 text-sm text-rose-200 shadow-xl" role="alert">
+  <div class="flex items-start gap-3">
+    <span class="flex-1" x-text="errorMessage"></span>
+    <button @click="errorMessage=''" class="text-rose-300 hover:text-white" aria-label="关闭错误提示">✕</button>
+  </div>
+</div>
+
+<!-- ══════════════ 视图 A：灵感启动台 ══════════════ -->
+<main x-show="view==='home'" x-cloak class="relative overflow-hidden">
+  <div class="hero-grid absolute inset-x-0 top-0 h-[34rem] pointer-events-none"></div>
+  <section class="relative max-w-5xl mx-auto px-4 md:px-6 pt-14 md:pt-20 pb-12 md:pb-14 text-center">
+    <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-700/80 bg-slate-900/70 text-[11px] text-slate-300">
+      <span class="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
+      <span x-text="demoMode ? '演示模式 · 内置模板可体验' : '多智能体应用创作空间'"></span>
+    </div>
+    <h1 class="mt-6 text-4xl md:text-6xl font-extrabold tracking-tight leading-[1.13]">
+      把灵感，变成<span class="block mt-1 bg-gradient-to-r from-cyan-300 via-sky-400 to-indigo-400 bg-clip-text text-transparent">真正能用的应用</span>
+    </h1>
+    <p class="mt-5 max-w-2xl mx-auto text-sm md:text-base leading-7 text-slate-400">描述你的想法，多个 AI Agent 将协作编写代码、检查质量，并在沙盒中即时运行。</p>
+
+    <div class="mt-8 md:mt-9 surface rounded-2xl p-3 md:p-4 max-w-3xl mx-auto shadow-2xl shadow-sky-950/30 text-left focus-within:border-sky-400/40 focus-within:shadow-[0_0_0_3px_rgba(14,165,233,.08)] transition">
+      <textarea id="prompt-input" x-model="prompt" rows="3" maxlength="400" aria-label="应用需求描述"
+        placeholder="描述你想做的应用，例如：一个记录每月支出、按类别汇总并支持筛选的记账本"
+        class="w-full bg-transparent resize-none outline-none px-2 py-2 text-[15px] leading-7 placeholder:text-slate-500"
+        @keydown.ctrl.enter.prevent="createFromPrompt()" @keydown.meta.enter.prevent="createFromPrompt()"></textarea>
+      <div class="mt-2 flex items-center justify-between gap-3 border-t border-slate-800/80 pt-3">
+        <span class="truncate text-[11px] text-slate-500" aria-live="polite">
+          <span x-text="prompt.length"></span>/400 · ⌘/Ctrl + Enter 生成
+        </span>
+        <button type="button" @click="createFromPrompt()"
+          :disabled="prompt.trim().length < 4 || promptSubmitting || generating || busy.active"
+          class="px-4 md:px-5 py-2.5 rounded-lg primary-button text-white text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed transition shrink-0"
+          x-text="promptSubmitting ? '正在创建…' : busy.active ? '其他应用生成中…' : user ? '开始生成 →' : '登录后生成 →'"></button>
+      </div>
+    </div>
+    <div class="mt-3 flex flex-wrap justify-center gap-2" aria-label="试试这些应用描述">
+      <template x-for="example in examples" :key="example.title">
+        <button type="button" @click="useExample(example.prompt)" :title="example.prompt"
+          class="max-w-full inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-800 bg-slate-900/60 text-[11px] text-slate-400 hover:border-sky-500/40 hover:text-sky-200 transition">
+          <span class="text-sky-400/80" x-text="example.icon"></span>
+          <span class="truncate max-w-[190px]" x-text="example.title"></span>
+        </button>
+      </template>
+    </div>
+    <p x-show="busy.active" x-cloak class="mt-3 text-[11px] text-amber-300" role="status">
+      「<span x-text="busy.title || '另一个应用'"></span>」正在生成，完成后即可开始新的创作。
+    </p>
+    <div class="mt-8 flex flex-wrap justify-center gap-x-7 gap-y-3 text-[11px] text-slate-500">
+      <span class="inline-flex items-center gap-2"><i class="step-dot done"></i>需求拆解与协作</span>
+      <span class="inline-flex items-center gap-2"><i class="step-dot active"></i>沙盒运行预览</span>
+      <span class="inline-flex items-center gap-2"><i class="step-dot"></i>版本可查看与回退</span>
+    </div>
+  </section>
+
+  <section id="showcase" class="relative max-w-6xl mx-auto px-4 md:px-6 pb-16 md:pb-20 scroll-mt-24">
+    <div class="flex items-end justify-between gap-4 mb-5 md:mb-6">
+      <div>
+        <div class="eyebrow text-[10px] text-slate-500 font-medium mb-2">TEMPLATE GALLERY</div>
+        <div class="flex items-center gap-2">
+          <h2 class="font-semibold text-xl md:text-2xl tracking-tight">预置成品</h2>
+          <span class="text-[10px] text-sky-300 px-2 py-0.5 rounded-full border border-sky-400/20 bg-sky-400/[.06]" x-text="showcase.length + ' 个'"></span>
+        </div>
+        <p class="text-xs text-slate-500 mt-1.5">点击直接打开交互应用，也可以把示例描述带入创作框</p>
+      </div>
+      <button type="button" @click="loadShowcase()" :disabled="showcaseLoading"
+        class="text-[11px] text-slate-400 px-3 py-1.5 rounded-lg border border-slate-800 hover:border-slate-700 hover:text-slate-200 disabled:opacity-40 transition shrink-0"
+        x-text="showcaseLoading ? '加载中…' : '刷新'"></button>
+    </div>
+    <div x-show="showcaseLoading" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4" aria-label="预置应用加载中">
+      <template x-for="i in 3" :key="i">
+        <div class="glass rounded-2xl overflow-hidden animate-pulse">
+          <div class="h-32 bg-slate-800/60"></div>
+          <div class="p-4 space-y-3"><div class="h-3 w-1/3 rounded bg-slate-700/60"></div><div class="h-2 w-4/5 rounded bg-slate-800"></div></div>
+        </div>
+      </template>
+    </div>
+    <div x-show="!showcaseLoading && showcase.length" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
+      <template x-for="item in showcase" :key="item.id">
+        <article class="glass card-hover rounded-2xl overflow-hidden group">
+          <button type="button" @click="openSession(item.id)" :disabled="openingSessionId!==null"
+            class="block w-full text-left disabled:cursor-wait disabled:opacity-70" :aria-label="'打开应用：' + item.title">
+          <div class="h-36 md:h-40 relative flex items-center justify-center overflow-hidden bg-slate-900/70 px-5 pt-4">
+            <div class="absolute inset-0 bg-gradient-to-br from-sky-500/[.07] via-transparent to-indigo-500/[.08]"></div>
+            <div class="mini-window relative w-[88%] h-full rounded-t-xl overflow-hidden p-2.5">
+              <div class="h-4 flex items-center gap-1.5 border-b border-slate-700/70 pb-2">
+                <i class="w-1.5 h-1.5 rounded-full bg-slate-600"></i><i class="w-1.5 h-1.5 rounded-full bg-slate-600"></i><i class="w-1.5 h-1.5 rounded-full bg-slate-600"></i>
+                <span class="mini-line w-14 ml-2"></span>
+              </div>
+              <div class="pt-2.5">
+                <div x-show="coverKind(item.title)==='mortgage'" class="grid grid-cols-[1fr_auto] gap-2">
+                  <div class="rounded-lg bg-slate-800/80 p-2"><div class="mini-line w-12"></div><div class="mt-2 text-[10px] font-semibold text-slate-200">月供估算</div><div class="mt-1 text-[8px] text-slate-500">贷款金额 · 年限 · 利率</div></div>
+                  <div class="rounded-lg border border-sky-400/15 bg-sky-400/[.06] p-2 text-right"><div class="text-[8px] text-slate-500">每月还款</div><div class="mt-1 text-xs font-semibold text-sky-300">¥ 8,520</div></div>
+                  <div class="col-span-2 h-1.5 rounded-full bg-slate-800"><div class="h-full w-2/3 rounded-full bg-sky-500/70"></div></div>
+                </div>
+                <div x-show="coverKind(item.title)==='kanban'" class="grid grid-cols-3 gap-1.5">
+                  <template x-for="(label,i) in ['待办','进行中','完成']" :key="label">
+                    <div class="rounded-md bg-slate-800/70 p-1.5"><div class="text-[7px] text-slate-400" x-text="label"></div><div class="mt-1.5 h-5 rounded border border-slate-700 bg-slate-900/70"></div><div x-show="i===1" class="mt-1 h-4 rounded border border-sky-400/20 bg-sky-400/[.07]"></div></div>
+                  </template>
+                </div>
+                <div x-show="coverKind(item.title)==='profile'" class="flex items-center gap-3 px-2 py-1">
+                  <div class="w-10 h-10 rounded-full bg-gradient-to-br from-sky-400/50 to-indigo-500/40 border border-sky-300/20"></div>
+                  <div class="flex-1"><div class="mini-line w-16 bg-sky-400/40"></div><div class="mini-line w-24 mt-2"></div><div class="mt-2 flex gap-1"><i class="w-6 h-2 rounded-full bg-sky-400/30"></i><i class="w-6 h-2 rounded-full bg-slate-700"></i></div></div>
+                </div>
+                <div x-show="coverKind(item.title)==='pomodoro'" class="flex items-center justify-center gap-4 py-1">
+                  <div class="w-12 h-12 rounded-full border-[3px] border-sky-400/80 border-r-slate-700 flex items-center justify-center text-[10px] font-semibold text-sky-200">25:00</div>
+                  <div><div class="mini-line w-16 bg-sky-400/40"></div><div class="mini-line w-11 mt-2"></div><div class="mt-2 h-3 w-12 rounded bg-sky-500/50"></div></div>
+                </div>
+                <div x-show="coverKind(item.title)==='notes'" class="grid grid-cols-2 gap-2">
+                  <div class="rounded-md border border-slate-700/80 p-2"><div class="mini-line w-12 bg-sky-400/40"></div><div class="mini-line w-full mt-2"></div><div class="mini-line w-4/5 mt-1.5"></div></div>
+                  <div class="rounded-md bg-sky-400/[.06] p-2"><div class="mini-line w-10 bg-sky-400/40"></div><div class="mini-line w-full mt-2 bg-slate-700"></div><div class="mini-line w-3/4 mt-1.5 bg-slate-700"></div></div>
+                </div>
+              </div>
+            </div>
+            <span class="absolute top-3 left-3 text-[10px] text-slate-300 px-2 py-1 rounded-md bg-slate-950/80 border border-slate-700/70" x-text="coverLabel(item.title)"></span>
+            <span x-show="openingSessionId===item.id" class="absolute inset-0 flex items-center justify-center bg-slate-950/55 text-xs text-sky-200" role="status">正在打开应用…</span>
+          </div>
+          <div class="p-4">
+            <div class="flex items-center justify-between gap-3">
+              <div class="text-[14px] font-semibold text-slate-100 truncate" x-text="item.title"></div>
+              <span class="text-slate-400 text-xs group-hover:text-sky-300 transition" x-text="openingSessionId===item.id ? '…' : '打开 →'"></span>
+            </div>
+            <p class="mt-1.5 min-h-10 text-[11px] leading-5 text-slate-500 line-clamp-2" x-text="showcaseDescription(item.title)"></p>
+          </div>
+          </button>
+          <button type="button" @click="useExample(exampleForTitle(item.title), true)"
+            class="mx-4 mb-4 text-[11px] text-sky-300/80 hover:text-sky-200 transition">用这个想法开始创作 ↗</button>
+        </article>
+      </template>
+    </div>
+    <div x-show="!showcaseLoading && !showcase.length" class="surface rounded-2xl px-6 py-10 text-center">
+      <p class="text-sm text-slate-300" x-text="showcaseError || '暂时没有可展示的预置应用'"></p>
+      <button type="button" @click="loadShowcase()" class="mt-3 text-xs text-sky-300 hover:text-sky-200">重试加载</button>
+    </div>
+  </section>
+</main>
+
+<!-- ══════════════ 视图 B：我的项目 ══════════════ -->
+<main id="projects" x-show="view==='dashboard'" x-cloak class="max-w-6xl mx-auto px-4 md:px-6 py-10 md:py-14 scroll-mt-24">
+  <div class="flex items-end justify-between gap-4 mb-7">
+    <div>
+      <div class="eyebrow text-[10px] text-sky-400/80 font-semibold mb-2">YOUR WORKSPACE</div>
+      <h2 class="font-bold text-2xl md:text-3xl tracking-tight">我的项目</h2>
+      <p class="text-sm text-slate-500 mt-2">继续构建你的应用与想法</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <button type="button" @click="goDashboard()" :disabled="projectsLoading" class="text-xs px-3 py-2.5 rounded-lg border border-slate-700 text-slate-300 hover:border-slate-600 disabled:opacity-40 transition" x-text="projectsLoading ? '刷新中…' : '刷新'"></button>
+      <button type="button" @click="newSession()" class="text-xs px-4 py-2.5 rounded-lg primary-button text-white font-medium transition shrink-0">＋ 新建应用</button>
+    </div>
+  </div>
+  <div x-show="projectsLoading && !mySessions.length" class="glass rounded-2xl p-10 md:p-16 text-center animate-pulse" aria-label="项目加载中">
+    <div class="mx-auto space-y-2"><div class="mini-line mx-auto w-24"></div><div class="mini-line mx-auto w-36"></div></div>
+    <p class="mt-5 text-sm text-slate-500">正在加载你的项目…</p>
+  </div>
+  <div x-show="!projectsLoading && !mySessions.length" class="glass rounded-2xl p-10 md:p-16 text-center">
+    <div class="mx-auto w-14 h-14 rounded-2xl bg-sky-400/10 border border-sky-300/10 flex items-center justify-center text-2xl">✦</div>
+    <h3 class="mt-5 text-base font-semibold text-slate-200">这里还很安静</h3>
+    <p class="mt-2 text-sm text-slate-500">回到首页描述你的想法，开始创建第一个应用。</p>
+    <button @click="go('home')" class="mt-5 px-4 py-2 rounded-lg border border-slate-700 text-sm text-slate-300 hover:border-sky-400/40 hover:text-sky-200 transition">去创作 →</button>
+  </div>
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+    <template x-for="s in mySessions" :key="s.id">
+      <div class="glass card-hover rounded-2xl p-4 group relative">
+        <button type="button" @click="openSession(s.id)" :disabled="openingSessionId!==null"
+          class="block w-full text-left disabled:cursor-wait disabled:opacity-70" :aria-label="'打开项目：' + s.title">
+          <div class="h-24 rounded-xl bg-gradient-to-br from-slate-900 to-indigo-950/50 border border-white/[.04] flex items-center justify-center text-3xl mb-4" x-text="iconFor(s.title)"></div>
+          <div class="text-sm font-semibold text-slate-100 truncate" x-text="s.title"></div>
+          <div class="text-[11px] text-slate-500 mt-2" x-text="s.updated_at"></div>
+        </button>
+        <button @click.stop="deleteSession(s.id)" class="absolute top-5 right-5 w-7 h-7 rounded-lg text-slate-500 hover:text-rose-300 hover:bg-slate-800 text-xs opacity-0 group-hover:opacity-100 focus:opacity-100 transition" title="删除">✕</button>
+      </div>
+    </template>
+  </div>
+</main>
+
+<!-- ══════════════ 视图 C：多 Agent 协作工作台 ══════════════ -->
+<main x-show="view==='workbench'" x-cloak class="h-[calc(100dvh-3.5rem)] flex flex-col md:flex-row">
+
+  <!-- 移动端工作台顶栏 -->
+  <div class="md:hidden h-11 flex items-center gap-2 px-3 border-b border-slate-800/80 shrink-0">
+    <button @click="go('home')" class="text-slate-400 hover:text-slate-200 text-lg px-1">←</button>
+    <span class="text-sm font-bold truncate flex-1" x-text="currentTitle || '工作台'"></span>
+    <span x-show="busy.active" class="text-sky-300 pulse-dot text-[10px] mr-1 shrink-0">● 生成中</span>
+    <button @click="wbTab='chat'" class="text-[11px] px-2 py-1 rounded" :class="wbTab==='chat'?'bg-slate-800 text-sky-300':'text-slate-400'">对话</button>
+    <button @click="wbTab='preview'" class="text-[11px] px-2 py-1 rounded" :class="wbTab==='preview'?'bg-slate-800 text-sky-300':'text-slate-400'">预览</button>
+    <button @click="wbTab='files'" class="text-[11px] px-2 py-1 rounded" :class="wbTab==='files'?'bg-slate-800 text-sky-300':'text-slate-400'">文件</button>
+  </div>
+
+  <!-- 左栏 240px（桌面端） -->
+  <aside class="hidden md:flex w-60 shrink-0 border-r border-slate-800/70 flex-col bg-slate-950/45">
+    <div class="p-3 space-y-2">
+      <button @click="newSession()" class="w-full py-2.5 rounded-xl primary-button text-white text-sm font-semibold transition">＋ 新建应用</button>
+      <div class="grid grid-cols-2 gap-1 p-1 rounded-lg bg-slate-900">
+        <button @click="go('home')" class="text-[11px] py-1.5 rounded-md text-slate-400 hover:text-slate-200">灵感首页</button>
+        <button @click="goDashboard()" class="text-[11px] py-1.5 rounded-md text-slate-400 hover:text-slate-200">我的项目</button>
+      </div>
+    </div>
+    <div class="flex-1 overflow-y-auto px-3 pb-3 space-y-1">
+      <template x-for="s in sidebarSessions" :key="s.id">
+        <div @click="openSession(s.id)"
+          class="px-3 py-2 rounded-lg text-[13px] cursor-pointer truncate transition flex items-center gap-1.5"
+          :class="s.id===currentSessionId?'bg-sky-500/15 text-sky-300 border border-sky-500/30':'text-slate-400 hover:bg-slate-800/60 border border-transparent'">
+          <span class="truncate flex-1" x-text="s.title"></span>
+          <span x-show="busy.active && busy.session_id === s.id"
+                class="text-sky-300 pulse-dot text-[10px] shrink-0" title="正在生成">●</span>
+        </div>
+      </template>
+    </div>
+    <div class="p-3 border-t border-slate-800/80 text-[11px] text-slate-500 truncate" x-text="user ? user.username : '游客（只读）'"></div>
+  </aside>
+
+  <!-- 中栏 400px 对话流 -->
+  <section class="flex-1 md:flex-none md:w-[390px] border-r border-slate-800/70 flex-col bg-slate-950/35"
+           :class="wbTab==='chat' ? 'flex' : 'hidden md:flex'">
+    <div class="px-4 py-3 border-b border-slate-800/80 hidden md:block">
+      <div class="font-bold text-sm truncate" x-text="currentTitle || '未命名应用'"></div>
+      <div class="mt-2 flex items-center gap-3 text-[10px] text-slate-500">
+        <template x-for="(st,i) in steps" :key="st.key">
+          <div class="flex items-center gap-1.5">
+            <i class="step-dot" :class="stepState(i)"></i>
+            <span :class="stepIndex===i?'text-sky-300 font-medium':''" x-text="st.label"></span>
+          </div>
+        </template>
+      </div>
+      <div x-show="demoMode" x-cloak class="fade-in mt-2 text-[11px] rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-300 px-3 py-2">
+        ⚠️ 【演示模式】当前未配置在线模型，本次由离线模板引擎兜底生成。
+      </div>
+    </div>
+
+    <div class="flex-1 overflow-y-auto px-4 py-4 space-y-3" id="chat-scroll">
+      <template x-for="(m,i) in chatMessages" :key="i">
+        <div class="fade-in">
+          <div x-show="m.role==='user'" class="flex justify-end">
+            <div class="max-w-[85%] bg-sky-500/15 border border-sky-500/25 rounded-xl rounded-tr-sm px-3 py-2 text-[13px]" x-text="m.content"></div>
+          </div>
+          <div x-show="m.role==='assistant'" class="flex justify-start">
+            <div class="max-w-[92%] glass rounded-xl rounded-tl-sm px-3 py-2 text-[13px] leading-relaxed whitespace-pre-wrap" x-text="m.content"></div>
+          </div>
+          <div x-show="m.role==='status'" class="flex justify-center">
+            <div class="text-[11px] text-slate-500 bg-slate-900/70 rounded-full px-3 py-1" x-text="m.content"></div>
+          </div>
+        </div>
+      </template>
+      <div x-show="generating" class="flex justify-center"><span class="text-[11px] text-sky-300 pulse-dot">● ● ●</span></div>
+    </div>
+
+    <div class="p-3 border-t border-slate-800/80">
+      <!-- 游客只读提示：生成必须登录 -->
+      <template x-if="!user">
+        <button @click="goLogin('chat')" class="w-full py-2.5 rounded-xl glass text-slate-400 text-sm hover:text-sky-300 hover:border-sky-500/40 transition">
+          🔒 登录后可继续迭代（游客可浏览内置应用）
+        </button>
+      </template>
+      <!-- 全局互斥：其他会话正在生成时，本会话整体置灰 -->
+      <div x-show="user && isBusyElsewhere()"
+           class="w-full py-2.5 rounded-xl bg-slate-900/80 border border-slate-800 text-slate-500 text-xs px-3 text-center leading-relaxed">
+        ⏳ 「<span x-text="busy.title || '其他应用'"></span>」正在生成中<br class="sm:hidden">
+        <span class="text-[11px]">暂不能操作其他应用，完成后自动解锁</span>
+      </div>
+      <div x-show="user && !generating && !isBusyElsewhere()" class="glass rounded-xl p-2 flex items-end gap-2">
+        <textarea x-model="input" rows="2" placeholder="继续迭代，例如：把主题改成深色、加一个导出按钮…"
+          class="flex-1 bg-transparent resize-none outline-none px-2 py-1 text-[13px] placeholder:text-slate-600"
+          @keydown.ctrl.enter="send()"></textarea>
+        <button @click="send()" :disabled="!input.trim()" class="px-4 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-40 text-white text-sm font-bold transition">发送</button>
+      </div>
+      <!-- 停止生成只出现在正在运行的那个项目里 -->
+      <button x-show="user && generating && !isBusyElsewhere()" @click="stopGeneration()" class="w-full py-2.5 rounded-xl bg-rose-600/90 hover:bg-rose-500 text-white text-sm font-bold transition">
+        ■ 停止生成
+      </button>
+    </div>
+  </section>
+
+  <!-- 右栏：预览 + 文件 -->
+  <section class="flex-1 flex-col min-w-0 min-h-0 bg-slate-900/20"
+           :class="(wbTab==='preview'||wbTab==='files') ? 'flex' : 'hidden md:flex'">
+    <div x-show="generating" class="shrink-0 border-b border-slate-800/80 bg-slate-950/45">
+      <button type="button" @click="stageDetailsOpen=!stageDetailsOpen" :aria-expanded="stageDetailsOpen"
+        aria-controls="generation-stage-details" aria-label="展开或收起生成阶段进度"
+        class="flex w-full items-center gap-2 px-3 py-2 text-left">
+        <span class="shrink-0 text-[9px] uppercase tracking-[.12em] text-slate-500">Agent</span>
+        <span class="min-w-0 flex-1 truncate text-[11px] font-medium text-slate-300" x-text="stepIndex>=0 ? steps[stepIndex].label + ' 正在处理' : '准备生成'"></span>
+        <span class="hidden sm:flex items-center gap-1.5 overflow-hidden">
+          <template x-for="(st,i) in steps" :key="st.key">
+            <span class="flex items-center gap-1">
+              <i class="step-dot" :class="stepState(i)"></i>
+              <span class="text-[9px] whitespace-nowrap" :class="i===stepIndex?'text-sky-300':'text-slate-600'" x-text="st.label"></span>
+            </span>
+          </template>
+        </span>
+        <span class="shrink-0 text-[9px] text-slate-500" x-text="stageDetailsOpen ? '收起' : '详情'"></span>
+      </button>
+      <div class="h-0.5 bg-slate-800/80"><div class="h-full bg-sky-400 transition-all duration-300" :style="'width:' + ((Math.max(stepIndex,0)+0.5)/steps.length*100) + '%'"></div></div>
+      <div x-show="stageDetailsOpen" id="generation-stage-details" class="grid grid-cols-2 gap-1.5 border-t border-slate-800/70 px-3 py-2 sm:grid-cols-4">
+        <template x-for="(st,i) in steps" :key="st.key">
+          <div class="flex items-center gap-2 rounded-lg border border-slate-800/70 bg-slate-900/60 px-2.5 py-2">
+            <i class="step-dot shrink-0" :class="stepState(i)"></i>
+            <span class="min-w-0">
+              <span class="block truncate text-[10px] text-slate-300" x-text="st.label"></span>
+              <span class="block text-[9px] text-slate-500" x-text="i<stepIndex ? '已完成' : i===stepIndex ? '进行中' : '等待中'"></span>
+            </span>
+          </div>
+        </template>
+      </div>
+    </div>
+    <div class="h-11 flex items-center gap-1 md:gap-2 px-2 md:px-3 border-b border-slate-800/80 text-xs shrink-0 overflow-x-auto">
+      <button @click="previewTab='app'" class="px-2.5 py-1 rounded-md transition shrink-0" :class="previewTab==='app'?'bg-slate-800 text-sky-300':'text-slate-500 hover:text-slate-300'">应用预览</button>
+      <button @click="previewTab='files';loadFiles()" class="px-2.5 py-1 rounded-md transition shrink-0 flex items-center gap-1" :class="previewTab==='files'?'bg-slate-800 text-sky-300':'text-slate-500 hover:text-slate-300'">
+        文件 <span x-show="files.length" class="text-[10px] px-1 rounded bg-slate-700/60" x-text="files.length"></span>
+      </button>
+      <span class="w-px h-4 bg-slate-800 mx-1 shrink-0"></span>
+      <button @click="device='desktop'; renderSandbox()" class="px-2 py-1 rounded-md transition shrink-0" :class="device==='desktop'?'bg-slate-800 text-sky-300':'text-slate-500 hover:text-slate-300'" title="桌面全宽">💻</button>
+      <button @click="device='mobile'; renderSandbox()" class="px-2 py-1 rounded-md transition shrink-0" :class="device==='mobile'?'bg-slate-800 text-sky-300':'text-slate-500 hover:text-slate-300'" title="手机（加载 index_mobile.html）">📱</button>
+      <select x-model="selectedVersion" @change="restoreVersion()" :disabled="!user || !sessionOwned || !currentSessionId" class="bg-slate-900 border border-slate-800 rounded-md px-2 py-1 text-[11px] text-slate-400 outline-none max-w-32 md:max-w-40 shrink-0 disabled:opacity-40">
+        <option value="">版本历史…</option>
+        <template x-for="v in versions" :key="v.id">
+          <option :value="v.id" x-text="'#'+v.id+' '+v.mode+' '+(v.note||'')"></option>
+        </template>
+      </select>
+      <span class="flex-1"></span>
+      <button @click="reloadSandbox()" class="px-2 py-1 rounded-md text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition shrink-0" title="刷新沙盒">🔄</button>
+      <button @click="openInNewWindow()" class="px-2 py-1 rounded-md text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition shrink-0" title="新窗口打开">🔗</button>
+      <button @click="downloadHtml()" class="px-2 py-1 rounded-md text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition shrink-0" title="下载 HTML 源码">📥</button>
+    </div>
+
+    <!-- 应用预览 -->
+    <div x-show="previewTab==='app'" class="flex-1 flex justify-center bg-slate-900/40 p-2 md:p-3 min-h-0">
+      <iframe id="preview-frame" sandbox="allow-scripts allow-forms allow-modals allow-popups allow-same-origin"
+        class="h-full bg-white rounded-lg shadow-2xl shadow-black/40 border-0"
+        :class="device==='mobile'?'w-[375px] max-w-full':'w-full'"
+        :srcdoc="sandboxSrcdoc"></iframe>
+    </div>
+
+    <!-- 文件页签：会话文件夹产物 -->
+    <div x-show="previewTab==='files'" class="flex-1 flex min-h-0">
+      <div class="w-44 md:w-52 shrink-0 border-r border-slate-800/80 overflow-y-auto p-2 space-y-1">
+        <div class="text-[10px] text-slate-600 px-2 pb-1 truncate" x-text="'📁 ' + filePath"></div>
+        <!-- 生成中的占位文件行 -->
+        <div x-show="generating" class="px-2.5 py-2 rounded-lg bg-sky-500/10 border border-sky-500/25 text-[12px] flex items-center gap-2">
+          <span class="pulse-dot text-sky-300">●</span>
+          <div class="min-w-0">
+            <div class="text-sky-300 truncate">index.html</div>
+            <div class="text-[10px] text-slate-500">正在生成… <span x-text="genChars + ' 字符'"></span></div>
+          </div>
+        </div>
+        <template x-for="f in files" :key="f.name">
+          <div @click="viewFile(f.name)"
+            class="px-2.5 py-2 rounded-lg text-[12px] cursor-pointer transition"
+            :class="activeFile===f.name?'bg-sky-500/15 text-sky-300 border border-sky-500/30':'text-slate-400 hover:bg-slate-800/60 border border-transparent'">
+            <div class="truncate">📄 <span x-text="f.name"></span></div>
+            <div class="text-[10px] text-slate-500 mt-0.5" x-text="fmtSize(f.size) + ' · ' + fmtTime(f.updated_at)"></div>
+          </div>
+        </template>
+        <div x-show="!files.length && !generating" class="text-[11px] text-slate-600 px-2 py-4 text-center">生成后，产物文件会出现在这里</div>
+      </div>
+      <div class="flex-1 min-w-0 flex flex-col">
+        <div x-show="activeFile" class="px-3 py-1.5 border-b border-slate-800/80 text-[11px] text-slate-500 flex items-center gap-2">
+          <span x-text="activeFile"></span>
+          <span class="flex-1"></span>
+          <button @click="downloadActiveFile()" class="hover:text-sky-300 transition">📥 下载</button>
+        </div>
+        <pre x-show="activeFile" class="flex-1 overflow-auto p-3 text-[11px] leading-relaxed text-emerald-300/90 bg-slate-950/60 m-0 whitespace-pre-wrap break-all" x-text="fileContent"></pre>
+        <div x-show="!activeFile" class="flex-1 flex items-center justify-center text-slate-600 text-xs">选择左侧文件查看源码</div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ══════════════ 视图 D：登录 / 注册页 ══════════════ -->
+<main x-show="view==='login'" x-cloak class="min-h-[calc(100dvh-3.5rem)] flex items-center justify-center px-4">
+  <div class="glass rounded-2xl p-6 md:p-8 w-full max-w-sm fade-in">
+    <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-300 via-sky-500 to-indigo-500 flex items-center justify-center font-black text-slate-950 shadow-lg shadow-sky-500/20">P</div>
+    <h3 class="font-bold text-xl mt-5">欢迎回到创作空间</h3>
+    <p class="text-xs text-slate-500 mt-2 mb-6">新用户名将自动注册，登录后即可保存并继续迭代项目。</p>
+    <form @submit.prevent="doLogin()">
+      <label for="login-name" class="block mb-1.5 text-xs text-slate-400">用户名</label>
+      <input id="login-name" x-model="loginName" autocomplete="username" required placeholder="输入用户名" class="field-focus w-full mb-4 px-3.5 py-3 rounded-xl bg-slate-950/70 border border-slate-700/70 text-sm outline-none transition">
+      <label for="login-password" class="block mb-1.5 text-xs text-slate-400">密码</label>
+      <input id="login-password" x-model="loginPass" type="password" autocomplete="current-password" required placeholder="输入密码" class="field-focus w-full mb-5 px-3.5 py-3 rounded-xl bg-slate-950/70 border border-slate-700/70 text-sm outline-none transition">
+      <button type="submit" :disabled="!loginName.trim()||!loginPass||loggingIn" class="w-full py-3 rounded-lg primary-button disabled:opacity-40 text-white text-sm font-medium transition" x-text="loggingIn ? '正在登录…' : '进入工作空间'"></button>
+    </form>
+    <div class="flex items-center justify-between mt-4 text-[11px]">
+      <button @click="go('home')" class="text-slate-500 hover:text-slate-300 transition">← 先随便逛逛</button>
+      <span class="text-slate-600">游客可浏览内置应用</span>
+    </div>
+    <p x-show="loginError" class="mt-3 text-[11px] text-rose-400" x-text="loginError"></p>
+  </div>
+</main>
+
+<script>
+/* ══════════════ 沙盒状态同步桥（app_states）══════════════ */
+const P2A_BOOTSTRAP = `
+<script>
+(function(){
+  var INIT = __P2A_INIT__;
+  try{ if(INIT){ Object.keys(INIT).forEach(function(k){ try{localStorage.setItem(k, INIT[k]);}catch(e){} }); } }catch(e){}
+  var t=null;
+  function collect(){var o={};try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);o[k]=localStorage.getItem(k);}}catch(e){}return o;}
+  function emit(){try{window.parent.postMessage({type:'p2a:state',state:collect()},'*');}catch(e){}}
+  function schedule(){clearTimeout(t);t=setTimeout(emit,800);}
+  ['setItem','removeItem','clear'].forEach(function(m){
+    var o=localStorage[m].bind(localStorage);
+    localStorage[m]=function(){var r=o.apply(null,arguments);schedule();return r;};
+  });
+  window.addEventListener('beforeunload',emit);
+})();
+<\/script>`;
+
+function p2a() {
+  return {
+    view: 'home', prompt: '', input: '', generating: false, promptSubmitting: false, demoMode: false,
+    errorMessage: '',
+    user: null, showcase: [], showcaseLoading: true, showcaseError: '',
+    mySessions: [], projectsLoading: false, sidebarSessions: [],
+    currentSessionId: null, currentTitle: '', currentCode: '', sandboxSrcdoc: '',
+    openingSessionId: null,
+    chatMessages: [], versions: [], selectedVersion: '', device: 'desktop',
+    loginName: '', loginPass: '', loginError: '', loggingIn: false,
+    syncState: 'synced', abortCtrl: null, stateTimer: null, appState: null,
+    stepIndex: -1,
+    wbTab: 'chat', previewTab: 'app',
+    files: [], filePath: '', activeFile: '', fileContent: '', genChars: 0,
+    desktopCode: '', mobileCode: '', sessionOwned: false,
+    pending: null,   /* 'new' | 'prompt' | 'chat' —— 登录后恢复的动作 */
+    busy: {active: false, session_id: null, title: ''},
+    stageDetailsOpen: false,
+    steps: [
+      {key:'pm', label:'PM'}, {key:'coder', label:'Coder'},
+      {key:'reviewer', label:'Reviewer'}, {key:'host', label:'Host'},
+    ],
+    examples: [
+      {title:'智能房贷计算器', icon:'⌂', prompt:'做一个智能房贷计算器，输入房价、首付比例、利率和贷款年限，计算月供及总利息'},
+      {title:'项目管理看板', icon:'▦', prompt:'做一个任务看板，支持添加任务、在待办/进行中/已完成之间推进，刷新后数据还在'},
+      {title:'个人主页', icon:'◉', prompt:'做一个个人主页，展示头像、简介、技能和作品链接，支持编辑并保存'},
+      {title:'专注番茄钟', icon:'◷', prompt:'做一个番茄钟，25分钟专注+5分钟休息，可以暂停重置并记录今日完成次数'},
+      {title:'灵感笔记本', icon:'▤', prompt:'做一个灵感笔记本，支持新建、搜索、颜色分类和删除，数据自动保存'},
+    ],
+
+    /* ---------- 初始化（无自动游客注册：游客 = 纯浏览） ---------- */
+    async init() {
+      window.addEventListener('message', (e) => {
+        const frame = document.getElementById('preview-frame');
+        if (e.source !== frame?.contentWindow || e.origin !== window.location.origin ||
+            e.data?.type !== 'p2a:state' || !e.data.state ||
+            typeof e.data.state !== 'object' || !this.currentSessionId ||
+            !this.user || !this.sessionOwned) return;
+        this.appState = e.data.state;
+        clearTimeout(this.stateTimer);
+        this.stateTimer = setTimeout(() => this.saveAppState(), 1200);
+      });
+      if (this.token()) {
+        try {
+          const r = await fetch('/api/sessions', {headers: this.authHeaders()});
+          if (r.ok) {
+            this.user = {username: localStorage.getItem('p2a_user') || '用户'};
+            this.mySessions = await r.json();
+          } else if (r.status === 401) {
+            localStorage.removeItem('p2a_token');
+            localStorage.removeItem('p2a_user');
+            this.showError('登录状态已失效，请重新登录');
+          } else {
+            throw new Error((await r.json().catch(() => ({}))).detail || '项目列表加载失败');
+          }
+        } catch (error) {
+          this.showError('无法加载项目列表：' + error.message);
+        }
+      }
+      await this.loadShowcase();
+      this.view = 'home';
+      await this.refreshBusy();
+      await this.handleDeepLink();
+    },
+    showError(message) { this.errorMessage = message || '请求失败'; },
+    async handleDeepLink() {
+      const query = new URLSearchParams(window.location.search);
+      const sessionId = Number(query.get('session'));
+      const message = query.get('message');
+      const isNew = query.get('new') === '1';
+      if (!sessionId && !message && !isNew) return;
+      window.history.replaceState(null, '', window.location.pathname);
+      if (sessionId) {
+        await this.openSession(sessionId);
+      } else if (message) {
+        this.pendingPromptText = message;
+        if (this.user) {
+          this.input = message;
+          await this.send();
+        } else {
+          this.goLogin('prompt');
+        }
+      } else if (isNew) {
+        if (this.user) this.newSession();
+        else this.goLogin('new');
+      }
+    },
+    isBusyElsewhere() {
+      return this.busy.active && this.busy.session_id !== this.currentSessionId;
+    },
+    async refreshBusy() {
+      try {
+        const r = await fetch('/api/generation/status');
+        if (!r.ok) throw new Error('状态查询失败 (' + r.status + ')');
+        const status = await r.json();
+        this.busy = {...status, active: Boolean(status.busy)};
+      } catch (e) { /* 网络抖动忽略，下次再刷 */ }
+      clearTimeout(this._busyTimer);
+      this._busyTimer = setTimeout(() => this.refreshBusy(), 5000);
+    },
+    token() { return localStorage.getItem('p2a_token') || ''; },
+    authHeaders() { return this.token() ? {Authorization: 'Bearer ' + this.token()} : {}; },
+    async loadShowcase() {
+      this.showcaseLoading = true;
+      this.showcaseError = '';
+      try {
+        const r = await fetch('/api/public/showcase');
+        if (!r.ok) throw new Error('预置应用加载失败 (' + r.status + ')');
+        this.showcase = await r.json();
+      } catch (error) {
+        this.showcase = [];
+        this.showcaseError = error.message || '预置应用加载失败';
+        this.showError(error.message);
+      } finally {
+        this.showcaseLoading = false;
+      }
+    },
+    coverKind(title) {
+      const t = title || '';
+      if (t.includes('房贷') || t.includes('计算器')) return 'mortgage';
+      if (t.includes('待办') || t.includes('看板') || t.includes('任务')) return 'kanban';
+      if (t.includes('主页')) return 'profile';
+      if (t.includes('番茄') || t.includes('专注')) return 'pomodoro';
+      return 'notes';
+    },
+    coverLabel(title) {
+      return ({mortgage:'计算', kanban:'效率', profile:'个人主页', pomodoro:'专注', notes:'笔记'})[this.coverKind(title)];
+    },
+    showcaseDescription(title) {
+      return ({
+        mortgage:'输入房价、首付与利率，快速估算月供和总利息。',
+        kanban:'添加任务，在待办、进行中与已完成之间推进。',
+        profile:'编辑个人简介、技能和作品，生成专属主页。',
+        pomodoro:'专注与休息计时，记录每日完成次数。',
+        notes:'随手记录灵感，搜索笔记并自动保存。',
+      })[this.coverKind(title)];
+    },
+    exampleForTitle(title) {
+      const kind = this.coverKind(title);
+      return this.examples.find(example => this.coverKind(example.title) === kind)?.prompt
+        || this.examples[this.examples.length - 1].prompt;
+    },
+    useExample(text, scrollToComposer = false) {
+      this.prompt = text;
+      this.$nextTick(() => {
+        const field = document.getElementById('prompt-input');
+        if (scrollToComposer) field?.scrollIntoView({behavior:'smooth', block:'center'});
+        field?.focus();
+        field?.setSelectionRange(text.length, text.length);
+      });
+    },
+    iconFor(title) {
+      const t = title || '';
+      if (t.includes('房贷') || t.includes('计算')) return '🧮';
+      if (t.includes('待办') || t.includes('看板')) return '📋';
+      if (t.includes('主页')) return '👤';
+      if (t.includes('番茄') || t.includes('钟')) return '🍅';
+      if (t.includes('笔记')) return '📝';
+      return '✨';
+    },
+    fmtSize(n) { return n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB'; },
+    fmtTime(ts) { const d = new Date(ts * 1000); return `${d.getMonth()+1}-${String(d.getDate()).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; },
+
+    /* ---------- 视图切换 ---------- */
+    go(v) {
+      this.view = v;
+      if (v === 'home' && !this.showcase.length && !this.showcaseLoading) this.loadShowcase();
+    },
+    scrollToShowcase() { this.$nextTick(() => { const el = document.getElementById('showcase'); if (el) el.scrollIntoView({behavior:'smooth'}); }); },
+    async goDashboard() {
+      if (!this.user) { this.goLogin('dashboard'); return; }
+      this.syncState = 'syncing';
+      this.projectsLoading = true;
+      try {
+        const r = await fetch('/api/sessions', {headers: this.authHeaders()});
+        if (!r.ok) throw new Error((await r.json()).detail || '项目列表加载失败');
+        this.mySessions = await r.json();
+        this.view = 'dashboard';
+      } catch (error) {
+        this.showError(error.message);
+      } finally {
+        this.projectsLoading = false;
+        this.syncState = 'synced';
+      }
+    },
+    goLogin(pending) { this.pending = pending || null; this.loginError = ''; this.view = 'login'; },
+
+    /* ---------- 会话 ---------- */
+    async openSession(id) {
+      clearTimeout(this.stateTimer);
+      this.openingSessionId = id;
+      this.syncState = 'syncing';
+      this.refreshBusy();
+      try {
+        const r = await fetch('/api/sessions/' + id, {headers: this.authHeaders()});
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '会话加载失败');
+        const d = await r.json();
+        this.currentSessionId = d.id; this.currentTitle = d.title;
+        this.chatMessages = d.messages || [];
+        this.versions = d.versions || [];
+        this.desktopCode = d.latest_code || '';
+        this.mobileCode = '';
+        this.currentCode = this.desktopCode;
+        this.sessionOwned = !!this.user && Number(d.is_public) === 0;
+        this.appState = null;
+        if (this.user) {
+          const sr = await fetch(`/api/sessions/${id}/state`, {headers: this.authHeaders()});
+          if (!sr.ok) throw new Error((await sr.json().catch(() => ({}))).detail || '应用状态加载失败');
+          this.appState = (await sr.json()).state;
+        }
+        this.renderSandbox(); this.demoMode = false; this.stepIndex = -1;
+        this.previewTab = 'app'; this.activeFile = ''; this.fileContent = '';
+        await this.loadFiles();
+        if (this.user) {
+          const list = await fetch('/api/sessions', {headers: this.authHeaders()});
+          if (!list.ok) throw new Error((await list.json().catch(() => ({}))).detail || '项目列表加载失败');
+          this.sidebarSessions = await list.json();
+        } else {
+          this.sidebarSessions = this.showcase.map(s => ({id: s.id, title: s.title}));
+        }
+        this.view = 'workbench'; this.wbTab = 'preview';
+        this.errorMessage = '';
+      } catch (error) {
+        this.showError(error.message);
+      } finally {
+        this.openingSessionId = null;
+        this.syncState = 'synced';
+      }
+    },
+    newSession() {
+      if (!this.user) { this.goLogin('new'); return; }
+      clearTimeout(this.stateTimer);
+      this.currentSessionId = null; this.currentTitle = '';
+      this.desktopCode = ''; this.mobileCode = ''; this.currentCode = '';
+      this.chatMessages = []; this.versions = []; this.appState = null;
+      this.files = []; this.activeFile = ''; this.fileContent = '';
+      this.renderSandbox(); this.view = 'workbench'; this.wbTab = 'chat';
+    },
+    async deleteSession(id) {
+      try {
+        const r = await fetch('/api/sessions/' + id, {method:'DELETE', headers: this.authHeaders()});
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '删除项目失败');
+        await this.goDashboard();
+      } catch (error) {
+        this.showError(error.message);
+      }
+    },
+    createFromPrompt() {
+      const text = this.prompt.trim();
+      if (text.length < 4 || this.promptSubmitting || this.generating) return;
+      if (this.busy.active) {
+        this.showError('另一个应用正在生成，请稍候再试');
+        return;
+      }
+      if (!this.user) {
+        this.pendingPromptText = text;
+        this.goLogin('prompt');
+        return;
+      }
+      this.promptSubmitting = true;
+      this.pendingPromptText = text;
+      this.prompt = '';
+      this.newSession();
+      this.input = this.pendingPromptText;
+      const generation = this.send();
+      this.promptSubmitting = false;
+      return generation;
+    },
+
+    /* ---------- 文件（每会话文件夹产物） ---------- */
+    async loadFiles() {
+      if (!this.currentSessionId) { this.files = []; this.mobileCode = ''; return; }
+      try {
+        const r = await fetch(`/api/sessions/${this.currentSessionId}/files`, {headers: this.authHeaders()});
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '文件列表加载失败');
+        const d = await r.json();
+        this.files = d.files; this.filePath = d.path;
+        if (d.files.some(f => f.name === 'index_mobile.html')) {
+          const mr = await fetch(`/api/sessions/${this.currentSessionId}/files/index_mobile.html`, {headers: this.authHeaders()});
+          if (!mr.ok) throw new Error((await mr.json().catch(() => ({}))).detail || '移动端预览加载失败');
+          this.mobileCode = (await mr.json()).content;
+        } else {
+          this.mobileCode = '';
+        }
+        this.renderSandbox();   /* 移动端文件到达后按当前设备刷新预览 */
+      } catch (error) {
+        this.files = [];
+        this.mobileCode = '';
+        this.showError(error.message);
+      }
+    },
+    async viewFile(name) {
+      try {
+        const r = await fetch(`/api/sessions/${this.currentSessionId}/files/${encodeURIComponent(name)}`, {headers: this.authHeaders()});
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '文件内容加载失败');
+        const d = await r.json();
+        this.activeFile = d.name; this.fileContent = d.content;
+      } catch (error) {
+        this.showError(error.message);
+      }
+    },
+    downloadActiveFile() {
+      if (!this.activeFile) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([this.fileContent], {type:'text/plain'}));
+      a.download = this.activeFile; a.click();
+    },
+
+    /* ---------- 沙盒 ---------- */
+    activeCode() {
+      /* 设备切换 = 切换加载的页面：移动端优先 index_mobile.html，缺失时回落桌面版 */
+      return (this.device === 'mobile' && this.mobileCode) ? this.mobileCode : this.desktopCode;
+    },
+    renderSandbox() {
+      const initJson = JSON.stringify(this.appState || null).replace(/<\//g, '<\\/');
+      this.sandboxSrcdoc = P2A_BOOTSTRAP.replace('__P2A_INIT__', initJson) + (this.activeCode() || '');
+    },
+    reloadSandbox() { this.renderSandbox(); },
+    openInNewWindow() {
+      const code = this.activeCode();
+      if (!code) return;
+      const url = URL.createObjectURL(new Blob([code], {type:'text/html'}));
+      window.open(url, '_blank');
+    },
+    downloadHtml() {
+      const code = this.activeCode();
+      if (!code) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([code], {type:'text/html'}));
+      a.download = (this.currentTitle || 'app') + (this.device === 'mobile' && this.mobileCode ? '_mobile' : '') + '.html';
+      a.click();
+    },
+    async restoreVersion() {
+      if (!this.selectedVersion || !this.currentSessionId || !this.user || !this.sessionOwned) return;
+      try {
+        const r = await fetch(`/api/sessions/${this.currentSessionId}/versions/${this.selectedVersion}/restore`,
+          {method:'POST', headers: this.authHeaders()});
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '版本恢复失败');
+        this.selectedVersion = '';
+        await this.openSession(this.currentSessionId);
+      } catch (error) {
+        this.showError(error.message);
+      }
+    },
+    async saveAppState() {
+      if (!this.currentSessionId || !this.appState || !this.user || !this.sessionOwned) return;
+      this.syncState = 'syncing';
+      try {
+        const r = await fetch(`/api/sessions/${this.currentSessionId}/state`, {
+          method:'PUT', headers: {...this.authHeaders(), 'Content-Type':'application/json'},
+          body: JSON.stringify({state: this.appState})});
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '应用状态同步失败');
+      } catch (error) {
+        this.showError(error.message);
+      } finally {
+        this.syncState = 'synced';
+      }
+    },
+
+    /* ---------- 生成（仅登录用户） ---------- */
+    stepFor(content) {
+      if (content.includes('PM Agent')) return 0;
+      if (content.includes('Coder Agent') || content.includes('正在编写代码')) return 1;
+      if (content.includes('Chat Host')) return 3;
+      if (content.includes('Reviewer') || content.includes('Tester') || content.includes('DesignSpec')) return 2;
+      return -1;
+    },
+    stepState(i) {
+      if (this.stepIndex < 0) return '';
+      if (i < this.stepIndex) return 'done';
+      if (i === this.stepIndex) return 'active';
+      return '';
+    },
+    async send() {
+      const msg = this.input.trim();
+      if (!msg || this.generating) return;
+      if (!this.user) {
+        this.pendingPromptText = msg;
+        this.pending = 'chat';
+        this.goLogin('chat');
+        return;
+      }
+      if (this.isBusyElsewhere()) return;   /* 全局互斥：其他会话生成中，按钮已置灰 */
+      this.view = 'workbench';
+      this.wbTab = 'chat';
+      this.stageDetailsOpen = false;
+      this.input = ''; this.generating = true; this.demoMode = false; this.stepIndex = 0; this.genChars = 0;
+      this.errorMessage = '';
+      this.chatMessages.push({role:'user', content:msg});
+      this.previewTab = 'files';   /* 生成过程切到文件页，实时看产物产出 */
+      this.scrollChat();
+      this.abortCtrl = new AbortController();
+      try {
+        const resp = await fetch('/api/chat', {method:'POST',
+          headers: {...this.authHeaders(), 'Content-Type':'application/json'},
+          body: JSON.stringify({session_id: this.currentSessionId, message: msg}),
+          signal: this.abortCtrl.signal});
+        if (!resp.ok) {
+          const error = await resp.json().catch(() => ({}));
+          throw new Error(error.detail || 'HTTP ' + resp.status);
+        }
+        if (!resp.body) throw new Error('服务器未返回生成数据流');
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+          const {done, value} = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, {stream:true});
+          let idx;
+          while ((idx = buf.indexOf('\n\n')) >= 0) {
+            const chunk = buf.slice(0, idx); buf = buf.slice(idx + 2);
+            const line = chunk.split('\n').find(l => l.startsWith('data: '));
+            if (!line) continue;
+            let ev; try { ev = JSON.parse(line.slice(6)); } catch(e) { continue; }
+            this.handleEvent(ev);
+          }
+        }
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          this.chatMessages.push({role:'assistant', content:'⚠️ 请求失败：' + err.message});
+        }
+      } finally {
+        this.generating = false; this.stepIndex = -1;
+        await this.refreshBusy();
+        if (this.currentSessionId) {
+          await this.openSession(this.currentSessionId);
+          this.previewTab = 'app';
+        }
+      }
+    },
+    handleEvent(ev) {
+      if (ev.type === 'status') {
+        const s = ev.content || '';
+        if (s.includes('【演示模式】')) this.demoMode = true;
+        const m = s.match(/已生成 (\d+) 字符/); if (m) this.genChars = parseInt(m[1], 10);
+        const si = this.stepFor(s); if (si >= 0) this.stepIndex = si;
+        this.chatMessages.push({role:'status', content:s});
+      } else if (ev.type === 'text') {
+        this.chatMessages.push({role:'assistant', content:ev.content || ''});
+      } else if (ev.type === 'code') {
+        if (ev.file === 'index_mobile.html') {
+          this.mobileCode = ev.content || '';   /* 移动端版本落盘 */
+        } else {
+          this.desktopCode = ev.content || '';
+        }
+        this.renderSandbox();   /* 模型返回实时渲染进预览（跟随当前设备） */
+      } else if (ev.type === 'done') {
+        if (ev.session_id) this.currentSessionId = ev.session_id;
+        this.refreshBusy();
+      }
+      this.scrollChat();
+    },
+    stopGeneration() { if (this.abortCtrl) this.abortCtrl.abort(); },
+    scrollChat() {
+      this.$nextTick(() => {
+        const el = document.getElementById('chat-scroll');
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    },
+
+    /* ---------- 账号 ---------- */
+    async doLogin() {
+      if (this.loggingIn) return;
+      this.loginError = '';
+      this.loggingIn = true;
+      try {
+        const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({username:this.loginName.trim(), password:this.loginPass})});
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.detail || '登录失败');
+        localStorage.setItem('p2a_token', data.token);
+        localStorage.setItem('p2a_user', data.username);
+        this.user = {username: data.username};
+        const list = await fetch('/api/sessions', {headers: this.authHeaders()});
+        if (list.ok) this.mySessions = await list.json();
+        else this.showError((await list.json().catch(() => ({}))).detail || '项目列表加载失败');
+        /* 登录后恢复登录前意图 */
+        const pending = this.pending; this.pending = null;
+        if (pending === 'prompt' && this.pendingPromptText) {
+          const text = this.pendingPromptText; this.pendingPromptText = '';
+          this.prompt = text; this.createFromPrompt();
+        } else if (pending === 'chat' && this.pendingPromptText) {
+          this.input = this.pendingPromptText; this.pendingPromptText = '';
+          await this.send();
+        } else if (pending === 'new') {
+          this.newSession();
+        } else {
+          await this.goDashboard();
+        }
+      } catch (error) {
+        this.loginError = error.message || '登录失败';
+      } finally {
+        this.loggingIn = false;
+      }
+    },
+    logout() {
+      localStorage.removeItem('p2a_token'); localStorage.removeItem('p2a_user');
+      location.reload();
+    },
+  };
+}
+</script>
+</body>
+</html>

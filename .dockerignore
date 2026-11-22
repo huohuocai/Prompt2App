@@ -1,0 +1,15 @@
+.git
+.venv
+venv
+__pycache__
+*.py[cod]
+node_modules
+**/node_modules
+frontend/dist
+.env
+*.env
+*.db
+*.db-wal
+*.db-shm
+.cache
+.data

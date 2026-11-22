@@ -1,0 +1,29 @@
+# 环境变量与密钥（绝不可提交）
+.env
+*.env
+
+# 数据库与本地数据（部署时由服务自动初始化）
+*.db
+*.db-wal
+*.db-shm
+.cache/
+.data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 前端依赖与构建产物
+node_modules/
+frontend/dist/
+
+# 系统与编辑器
+.DS_Store
+.idea/
+.vscode/
+*.log
+.p2a.pid
+.p2a.log

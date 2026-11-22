@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Prompt2App</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --canvas: #080d18;
+      --paper: #101827;
+      --ink: #e7edf8;
+      --ink-muted: rgba(203,213,225,.68);
+      --line: rgba(148,163,184,.12);
+      --line-strong: rgba(148,163,184,.22);
+      --brand: #4267ff;
+      --brand-hover: #3355e6;
+    }
+    body {
+      margin: 0;
+      background: radial-gradient(ellipse at 50% -18%,rgba(14,116,144,.15),transparent 40%),var(--canvas);
+      color: var(--ink);
+      font-family: "IBM Plex Sans", "SF Pro Text", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      -webkit-font-smoothing: antialiased;
+    }
+    :focus-visible { outline: 2px solid rgba(96,165,250,.8); outline-offset: 3px; }
+    .card {
+      transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+      border: 1px solid var(--line);
+      background: rgba(15,23,42,.78);
+      border-radius: 16px;
+      overflow: hidden;
+    }
+    .card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(96,165,250,.35);
+      box-shadow: 0 12px 32px -20px rgba(0,0,0,.7);
+    }
+    .pill {
+      display: inline-flex; align-items: center; height: 24px; padding: 0 8px;
+      border-radius: 999px; border: 1px solid var(--line); background: rgba(8,13,24,.82);
+      font-size: 10px; color: var(--ink-muted);
+    }
+    .pill-brand { background: rgba(66,103,255,.16); border-color: rgba(66,103,255,.24); color: #a5b4fc; }
+    .btn-brand {
+      background: var(--brand); color: #fff; border-radius: 999px;
+      font-weight: 500; font-size: 13px; padding: 8px 14px; border: none; cursor: pointer;
+    }
+    .btn-brand:hover { background: var(--brand-hover); }
+    .btn-brand:disabled { opacity:.45;cursor:not-allowed; }
+    .cover { height: 150px; border-bottom: 1px solid var(--line); position: relative; overflow: hidden; }
+    .window {
+      margin: 20px auto 0; width: 86%; height: 100%; overflow:hidden;
+      border: 1px solid var(--line-strong); border-bottom: 0; border-radius: 10px 10px 0 0;
+      background: #0b1220; box-shadow: 0 12px 30px rgba(0,0,0,.24);
+    }
+    .dots { display: flex; gap: 4px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+    .dots i { width: 6px; height: 6px; border-radius: 50%; background: rgba(148,163,184,.4); }
+    .mini-line { height:5px;border-radius:99px;background:rgba(148,163,184,.2); }
+    .panel { border:1px solid var(--line);background:rgba(15,23,42,.78);border-radius:14px; }
+    .skeleton { background:linear-gradient(90deg,rgba(148,163,184,.05) 25%,rgba(148,163,184,.11) 37%,rgba(148,163,184,.05) 63%);background-size:800px 100%;animation:shimmer 1.6s linear infinite;border-radius:8px; }
+    @keyframes shimmer { to { background-position:800px 0; } }
+    @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important; } }
+  </style>
+</head>
+<body class="min-h-screen pb-16">
+  <header class="sticky top-0 z-30 bg-slate-950/85 backdrop-blur-xl border-b" style="border-color:var(--line)">
+    <div class="max-w-[1200px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2 no-underline" style="color:var(--ink)">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" fill="#4267ff"/><circle cx="6" cy="8" r="2.2" fill="#4267ff" opacity=".55"/><circle cx="18" cy="8" r="2.2" fill="#4267ff" opacity=".55"/><circle cx="7" cy="16" r="2.2" fill="#4267ff" opacity=".4"/><circle cx="17" cy="16" r="2.2" fill="#4267ff" opacity=".4"/></svg>
+        <span class="font-semibold tracking-tight">Prompt2App</span>
+      </a>
+      <div class="flex items-center gap-2">
+        <nav class="flex items-center gap-1" aria-label="主导航">
+          <a href="/" class="nav-pill">首页</a>
+          <a href="/#showcase" class="nav-pill active">预置成品</a>
+          <a href="#mine" class="nav-pill">我的项目</a>
+        </nav>
+        <button type="button" id="auth-btn" onclick="authAction()" class="btn-brand">登录 / 注册</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-[1200px] mx-auto px-4 sm:px-6 py-8 space-y-12">
+    <div id="guest-banner" class="hidden flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-slate-900/80 px-4 py-3 text-[12px]" style="border-color:var(--line);color:var(--ink-muted)">
+      <span class="flex items-center gap-2"><span class="h-1.5 w-1.5 rounded-full bg-amber-600"></span>当前为游客模式：可打开预置成品；新建与「我的项目」需登录。</span>
+      <button type="button" onclick="authAction()" class="font-medium" style="color:var(--brand)">免费注册 / 登录</button>
+    </div>
+
+    <section id="samples">
+      <div class="mb-5 flex items-end justify-between gap-4">
+        <div>
+          <div class="mb-1 text-[10px] tracking-[.14em] text-slate-500 uppercase">Template gallery</div>
+          <div class="flex items-center gap-2">
+            <h2 class="text-[22px] font-semibold tracking-tight m-0">预置成品</h2>
+            <span id="public-count" class="pill pill-brand">0 个</span>
+          </div>
+          <p class="mt-1.5 text-[13px] m-0" style="color:var(--ink-muted)">点开即可体验，也可将示例描述带入创作框</p>
+        </div>
+        <div class="flex items-center gap-3">
+          <button type="button" onclick="loadPublic()" id="public-refresh" class="rounded-lg border px-3 py-2 text-[12px] transition hover:text-slate-100" style="border-color:var(--line-strong);color:var(--ink-muted)">刷新</button>
+          <a href="#mine" class="text-[12px] hover:text-sky-300 transition" style="color:var(--ink-muted)">我的项目 →</a>
+        </div>
+      </div>
+      <div id="public-grid" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"></div>
+      <div id="public-loading" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" aria-label="预置应用加载中">
+        <div class="panel overflow-hidden"><div class="skeleton h-36"></div><div class="p-4 space-y-3"><div class="skeleton h-3 w-1/3"></div><div class="skeleton h-2 w-4/5"></div></div></div>
+        <div class="panel hidden overflow-hidden sm:block"><div class="skeleton h-36"></div><div class="p-4 space-y-3"><div class="skeleton h-3 w-1/3"></div><div class="skeleton h-2 w-4/5"></div></div></div>
+        <div class="panel hidden overflow-hidden lg:block"><div class="skeleton h-36"></div><div class="p-4 space-y-3"><div class="skeleton h-3 w-1/3"></div><div class="skeleton h-2 w-4/5"></div></div></div>
+      </div>
+      <div id="public-error" class="hidden mt-4 rounded-xl border border-rose-400/20 bg-rose-400/[.06] p-4 text-sm text-rose-200" role="alert"></div>
+    </section>
+
+    <section id="mine">
+      <div class="mb-5 flex items-end justify-between gap-4">
+        <div>
+          <div class="mb-1 text-[10px] tracking-[.14em] text-slate-500 uppercase">Your workspace</div>
+          <h2 class="text-[22px] font-semibold tracking-tight m-0">我的项目</h2>
+          <p id="mine-hint" class="mt-1.5 text-[13px] m-0" style="color:var(--ink-muted)">登录后生成的应用会出现在这里</p>
+        </div>
+        <div class="flex gap-2">
+          <button type="button" onclick="loadMine()" id="mine-refresh" class="rounded-lg border px-3 py-2 text-[12px] transition hover:text-slate-100" style="border-color:var(--line-strong);color:var(--ink-muted)">刷新</button>
+          <button type="button" onclick="goNewApp()" class="btn-brand rounded-lg">+ 新建应用</button>
+        </div>
+      </div>
+      <div id="mine-loading" class="hidden panel p-10 text-center" aria-label="项目加载中">
+        <div class="mx-auto space-y-2"><div class="skeleton mx-auto h-3 w-24"></div><div class="skeleton mx-auto h-3 w-36"></div></div>
+        <p class="mt-5 text-[13px]" style="color:var(--ink-muted)">正在加载项目…</p>
+      </div>
+      <div id="mine-empty" class="hidden panel p-10 text-center">
+        <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-xl border border-sky-400/15 bg-sky-400/[.06] text-xl text-sky-300">✦</div>
+        <p id="mine-empty-text" class="mt-4 text-[13px] m-0" style="color:var(--ink-muted)">还没有项目，输入一句话开始</p>
+        <button type="button" onclick="goNewApp()" class="mt-4 text-[13px] font-medium text-sky-300 hover:text-sky-200">去创作 →</button>
+      </div>
+      <div id="mine-error" class="hidden mt-3 rounded-xl border border-rose-400/20 bg-rose-400/[.06] p-4 text-sm text-rose-200" role="alert"></div>
+      <div id="mine-grid" class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"></div>
+    </section>
+  </main>
+
+  <div id="login-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4" role="dialog" aria-modal="true" aria-labelledby="login-title" onclick="if(event.target===this)closeLogin()">
+    <div class="bg-slate-900 rounded-2xl w-full max-w-md border p-6 shadow-2xl" style="border-color:var(--line-strong)">
+      <h1 id="login-title" class="text-lg font-semibold m-0">登录 / 注册</h1>
+      <p class="text-[13px] mt-1" style="color:var(--ink-muted)">新用户名会自动注册</p>
+      <p id="login-hint" class="text-[12px] text-amber-300 mt-2 hidden"></p>
+      <form class="mt-4" onsubmit="event.preventDefault();doLogin()">
+        <label for="login-user" class="mb-1.5 block text-xs" style="color:var(--ink-muted)">用户名</label>
+        <input id="login-user" type="text" autocomplete="username" required placeholder="输入用户名" class="w-full border rounded-lg bg-slate-950/70 px-3 py-3 text-base text-slate-100" style="border-color:var(--line-strong)" />
+        <label for="login-pass" class="mt-3 mb-1.5 block text-xs" style="color:var(--ink-muted)">密码</label>
+        <input id="login-pass" type="password" autocomplete="current-password" required placeholder="输入密码" class="w-full border rounded-lg bg-slate-950/70 px-3 py-3 text-base text-slate-100" style="border-color:var(--line-strong)" />
+        <button id="login-submit" type="submit" class="btn-brand w-full mt-4 py-3 rounded-lg">继续</button>
+      </form>
+      <p id="login-error" class="text-rose-300 text-xs text-center mt-2 hidden" role="alert"></p>
+      <button type="button" onclick="closeLogin()" class="w-full text-xs mt-3" style="color:var(--ink-muted)">取消</button>
+    </div>
+  </div>
+
+<script>
+  let token = localStorage.getItem('p2a_token') || '';
+  let username = localStorage.getItem('p2a_user') || '';
+  let pendingNavigation = '';
+  let loginInProgress = false;
+  const KIND_RULES = [
+    ['mortgage', /房贷|计算器/],
+    ['kanban', /待办|看板|任务/],
+    ['profile', /主页/],
+    ['pomodoro', /番茄|专注/],
+    ['notes', /笔记|灵感|记录/],
+  ];
+  const COVERS = {
+    mortgage: { label: '工具', tint: 'rgba(56,189,248,.12)' },
+    kanban: { label: '效率', tint: 'rgba(99,102,241,.12)' },
+    profile: { label: '个人主页', tint: 'rgba(129,140,248,.12)' },
+    pomodoro: { label: '专注', tint: 'rgba(14,165,233,.12)' },
+    notes: { label: '笔记', tint: 'rgba(59,130,246,.12)' },
+  };
+  const DESC = {
+    mortgage: { title: '智能房贷计算器', text: '输入房价、首付与利率，快速估算月供和总利息。', prompt: '做一个智能房贷计算器，输入房价、首付比例、利率和贷款年限，计算月供及总利息' },
+    kanban: { title: '项目管理看板', text: '添加任务，在待办、进行中与已完成之间推进。', prompt: '做一个任务看板，支持添加任务、在待办/进行中/已完成之间推进，刷新后数据还在' },
+    profile: { title: '个人主页', text: '编辑个人简介、技能和作品，生成专属主页。', prompt: '做一个个人主页，展示头像、简介、技能和作品链接，支持编辑并保存' },
+    pomodoro: { title: '专注番茄钟', text: '专注与休息计时，记录每日完成次数。', prompt: '做一个番茄钟，25分钟专注+5分钟休息，可以暂停重置并记录今日完成次数' },
+    notes: { title: '灵感笔记本', text: '随手记录灵感，搜索笔记并自动保存。', prompt: '做一个灵感笔记本，支持新建、搜索、颜色分类和删除，数据自动保存' },
+  };
+
+  function esc(s){return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+  function kindFor(title){const rule=KIND_RULES.find(([,pattern])=>pattern.test(title||''));return rule?rule[0]:'notes';}
+  function authAction(){ if(token){ token='';username=''; localStorage.removeItem('p2a_token'); localStorage.removeItem('p2a_user'); location.reload(); } else { document.getElementById('login-hint').classList.add('hidden'); document.getElementById('login-modal').classList.remove('hidden'); setTimeout(()=>document.getElementById('login-user').focus(),0); } }
+  function closeLogin(){ pendingNavigation=''; document.getElementById('login-modal').classList.add('hidden'); }
+  async function doLogin(){
+    if(loginInProgress)return;
+    const u=document.getElementById('login-user').value.trim(), p=document.getElementById('login-pass').value, err=document.getElementById('login-error');
+    const button=document.getElementById('login-submit');
+    err.classList.add('hidden');
+    if(!u||!p){ err.textContent='请输入用户名和密码'; err.classList.remove('hidden'); return; }
+    loginInProgress=true; button.disabled=true; button.textContent='正在登录…';
+    try{
+      const res=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+      const data=await res.json().catch(()=>({}));
+      if(!res.ok) throw new Error(data.detail||'登录失败');
+      token=data.token; username=data.username;
+      localStorage.setItem('p2a_token',token); localStorage.setItem('p2a_user',username);
+      const destination=pendingNavigation;
+      pendingNavigation='';
+      closeLogin(); refreshAll();
+      if(destination) location.href=destination;
+    }catch(e){ err.textContent=e.message||'登录失败'; err.classList.remove('hidden'); }
+    finally{loginInProgress=false;button.disabled=false;button.textContent='继续';}
+  }
+  function updateHeader(){
+    const btn=document.getElementById('auth-btn'), banner=document.getElementById('guest-banner');
+    if(token){ btn.textContent=(username||'用户')+' · 退出'; btn.style.background='transparent'; btn.style.color='var(--ink-muted)'; btn.style.border='1px solid var(--line-strong)'; banner.classList.add('hidden'); }
+    else { btn.textContent='登录 / 注册'; btn.style.background=''; btn.style.color=''; btn.style.border=''; banner.classList.remove('hidden'); }
+  }
+  function goNewApp(){
+    if(!token){ pendingNavigation='/app?new=1'; const h=document.getElementById('login-hint'); h.textContent='新建应用需要登录。游客可打开预置成品。'; h.classList.remove('hidden'); document.getElementById('login-modal').classList.remove('hidden'); setTimeout(()=>document.getElementById('login-user').focus(),0); return; }
+    location.href='/app?new=1';
+  }
+  function coverHtml(title){
+    const kind=kindFor(title), c=COVERS[kind];
+    const mock={
+      mortgage:'<div class="grid grid-cols-[1fr_auto] gap-2"><div class="rounded-lg bg-slate-800 p-2"><div class="mini-line w-12"></div><div class="mt-2 text-[10px] font-semibold">月供估算</div><div class="mt-1 text-[8px] text-slate-500">房价 · 年限 · 利率</div></div><div class="rounded-lg border border-sky-400/20 bg-sky-400/[.06] p-2 text-right"><div class="text-[8px] text-slate-500">每月还款</div><div class="mt-1 text-xs font-semibold text-sky-300">¥ 8,520</div></div><div class="col-span-2 h-1.5 rounded-full bg-slate-800"><div class="h-full w-2/3 rounded-full bg-sky-500/70"></div></div></div>',
+      kanban:'<div class="grid grid-cols-3 gap-1.5">'+['待办','进行中','完成'].map((label,i)=>'<div class="rounded-md bg-slate-800/80 p-1.5"><div class="text-[7px] text-slate-400">'+label+'</div><div class="mt-1.5 h-5 rounded border border-slate-700 bg-slate-900"></div>'+(i===1?'<div class="mt-1 h-4 rounded border border-sky-400/20 bg-sky-400/[.06]"></div>':'')+'</div>').join('')+'</div>',
+      profile:'<div class="flex items-center gap-3 px-2 py-1"><div class="h-10 w-10 rounded-full border border-sky-300/20 bg-gradient-to-br from-sky-400/50 to-indigo-500/40"></div><div class="flex-1"><div class="mini-line w-16 bg-sky-400/40"></div><div class="mini-line w-24 mt-2"></div><div class="mt-2 h-2 w-14 rounded-full bg-sky-400/30"></div></div></div>',
+      pomodoro:'<div class="flex items-center justify-center gap-4 py-1"><div class="flex h-12 w-12 items-center justify-center rounded-full border-[3px] border-sky-400/80 border-r-slate-700 text-[10px] font-semibold text-sky-200">25:00</div><div><div class="mini-line w-16 bg-sky-400/40"></div><div class="mini-line w-11 mt-2"></div><div class="mt-2 h-3 w-12 rounded bg-sky-500/50"></div></div></div>',
+      notes:'<div class="grid grid-cols-2 gap-2"><div class="rounded-md border border-slate-700 p-2"><div class="mini-line w-12 bg-sky-400/40"></div><div class="mini-line w-full mt-2"></div><div class="mini-line w-4/5 mt-1.5"></div></div><div class="rounded-md bg-sky-400/[.06] p-2"><div class="mini-line w-10 bg-sky-400/40"></div><div class="mini-line w-full mt-2"></div><div class="mini-line w-3/4 mt-1.5"></div></div></div>',
+    }[kind];
+    return '<div class="cover px-5 pt-4" style="background:'+c.tint+'">'+
+      '<span class="absolute top-3 left-3 pill">'+c.label+'</span>'+
+      '<div class="window"><div class="dots"><i></i><i></i><i></i><span class="mini-line ml-2 w-14"></span></div><div class="p-2.5">'+mock+'</div></div></div>';
+  }
+  function publicCard(item, i){
+    const kind=kindFor(item.title), details=DESC[kind];
+    return '<article class="card group">'+
+      '<a href="/app?session='+encodeURIComponent(String(item.id))+'" aria-label="打开应用：'+esc(item.title)+'" class="block no-underline" style="color:inherit">'+
+      coverHtml(item.title)+
+      '<div class="p-4"><div class="flex items-start justify-between gap-3"><h3 class="m-0 min-w-0 truncate text-[15px] font-semibold">'+esc(item.title)+'</h3>'+
+      '<span class="pill shrink-0">预置</span></div>'+
+      '<p class="mt-1.5 min-h-10 text-[12px] leading-5" style="color:var(--ink-muted)">'+esc(details.text)+'</p>'+
+      '<span class="mt-3 inline-flex items-center gap-1 text-[12px] font-medium text-sky-300 group-hover:gap-1.5 transition">打开应用 →</span></div></a>'+
+      '<div class="border-t px-4 py-2.5" style="border-color:var(--line)"><button type="button" class="text-[11px] text-slate-400 hover:text-sky-300 transition" data-prompt="'+esc(details.prompt)+'" onclick="useSamplePrompt(this.dataset.prompt)">用这个想法开始创作 ↗</button></div>'+
+      '</article>';
+  }
+  function mineCard(item){
+    return '<a href="/app?session='+encodeURIComponent(String(item.id))+'" aria-label="继续编辑：'+esc(item.title||'未命名')+'" class="card group block no-underline" style="color:inherit">'+
+      coverHtml(item.title)+
+      '<div class="p-4"><h3 class="truncate text-[15px] font-semibold m-0">'+esc(item.title||'未命名')+'</h3>'+
+      '<p class="mt-1.5 text-[12px] m-0" style="color:var(--ink-muted)">'+esc(item.updated_at||'')+'</p>'+
+      '<span class="mt-3 inline-flex items-center gap-1 text-[12px] font-medium text-sky-300 group-hover:gap-1.5 transition">继续编辑 →</span></div></a>';
+  }
+  function useSamplePrompt(prompt){
+    sessionStorage.setItem('p2a_pending_prompt', prompt);
+    location.href='/#showcase';
+  }
+  async function loadPublic(){
+    const grid=document.getElementById('public-grid'), loading=document.getElementById('public-loading'), err=document.getElementById('public-error');
+    const refresh=document.getElementById('public-refresh');
+    err.classList.add('hidden'); grid.classList.add('hidden'); loading.classList.remove('hidden'); refresh.disabled=true;
+    try{
+      const res=await fetch('/api/public/showcase');
+      if(!res.ok) throw new Error('预置应用加载失败（'+res.status+'）');
+      const list=await res.json();
+      document.getElementById('public-count').textContent=(list.length||0)+' 个';
+      grid.innerHTML=list.map(publicCard).join('');
+      if(!list.length)grid.innerHTML='<div class="panel col-span-full p-8 text-center text-sm" style="color:var(--ink-muted)">暂时没有可展示的预置应用</div>';
+      grid.classList.remove('hidden');
+    }catch(e){err.textContent=(e.message||'预置应用加载失败')+'。请检查网络后重试。';err.classList.remove('hidden');}
+    finally{loading.classList.add('hidden');refresh.disabled=false;}
+  }
+  async function loadMine(){
+    const grid=document.getElementById('mine-grid'), empty=document.getElementById('mine-empty'), hint=document.getElementById('mine-hint');
+    const loading=document.getElementById('mine-loading'), errorBox=document.getElementById('mine-error'), refresh=document.getElementById('mine-refresh');
+    errorBox.classList.add('hidden');grid.innerHTML='';loading.classList.remove('hidden');empty.classList.add('hidden');refresh.disabled=true;
+    if(!token){ loading.classList.add('hidden');refresh.disabled=false;document.getElementById('mine-empty-text').textContent='登录后即可查看并继续编辑自己的项目。';empty.classList.remove('hidden');return; }
+    try{
+      const res=await fetch('/api/sessions',{headers:{Authorization:'Bearer '+token}});
+      if(!res.ok){const data=await res.json().catch(()=>({}));throw new Error(data.detail||'项目列表加载失败（'+res.status+'）');}
+      const list=await res.json();
+      hint.textContent=list.length?(list.length+' 个项目 · 支持版本回退'):'还没有项目，输入一句话开始';
+      if(!list.length){document.getElementById('mine-empty-text').textContent='还没有项目，输入一句话开始。';empty.classList.remove('hidden');return;}
+      grid.innerHTML=list.map(mineCard).join('');
+    }catch(e){errorBox.textContent=(e.message||'项目列表加载失败')+'。请检查登录状态或网络后重试。';errorBox.classList.remove('hidden');}
+    finally{loading.classList.add('hidden');refresh.disabled=false;}
+  }
+  function refreshAll(){ updateHeader(); loadPublic(); loadMine(); }
+  refreshAll();
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')closeLogin();});
+</script>
+</body>
+</html>

@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Prompt2App — 一句话生成能运行的应用</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --canvas: #080d18;
+      --canvas-soft: #0b1220;
+      --paper: #101827;
+      --ink: #e7edf8;
+      --ink-muted: rgba(203,213,225,.68);
+      --ink-faint: rgba(148,163,184,.5);
+      --line: rgba(148,163,184,.12);
+      --line-strong: rgba(148,163,184,.22);
+      --brand: #4267ff;
+      --brand-hover: #3355e6;
+    }
+    * { -webkit-tap-highlight-color: transparent; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      background: radial-gradient(ellipse at 50% -18%,rgba(14,116,144,.17),transparent 42%),var(--canvas);
+      color: var(--ink);
+      font-family: "IBM Plex Sans", "SF Pro Text", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    :focus-visible { outline: 2px solid rgba(96,165,250,.8); outline-offset: 3px; }
+    .nav-pill {
+      display: inline-flex; align-items: center; height: 32px; padding: 0 14px;
+      border-radius: 999px; font-size: 13px; color: var(--ink-muted);
+      text-decoration: none;
+    }
+    .nav-pill:hover { background: rgba(148,163,184,.08); color: var(--ink); }
+    .nav-pill.active { background: rgba(148,163,184,.1); color: var(--ink); font-weight: 500; }
+    .composer {
+      border: 1px solid var(--line-strong);
+      background: rgba(15,23,42,.78);
+      border-radius: 16px;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .composer:focus-within {
+      border-color: rgba(96,165,250,.45);
+      box-shadow: 0 0 0 3px rgba(66,103,255,.12);
+    }
+    .chip {
+      border: 1px solid var(--line);
+      background: rgba(15,23,42,.72);
+      border-radius: 999px;
+      font-size: 12px;
+      color: var(--ink-muted);
+      padding: 7px 12px;
+      max-width: 100%;
+      cursor: pointer;
+      transition: border-color .16s ease,color .16s ease,background-color .16s ease;
+    }
+    .chip:hover { border-color: rgba(96,165,250,.4); color: #bfdbfe; background: rgba(30,41,59,.8); }
+    .btn-brand {
+      background: var(--brand); color: #fff; border: 1px solid var(--brand); border-radius: 9px;
+      font-size: 13px; font-weight: 500; padding: 9px 16px; cursor: pointer;
+      transition: background-color .16s ease,border-color .16s ease,opacity .16s ease;
+    }
+    .btn-brand:hover { background: var(--brand-hover); }
+    .btn-brand:disabled { opacity: .45; cursor: not-allowed; }
+    textarea { font: inherit; }
+    .sample-card {
+      display:block; overflow:hidden; border:1px solid var(--line); border-radius:16px;
+      background:rgba(15,23,42,.78); color:var(--ink); text-decoration:none;
+      transition:transform .18s ease,border-color .18s ease,background-color .18s ease;
+    }
+    .sample-card:hover { transform:translateY(-2px); border-color:rgba(96,165,250,.35); background:#111c2e; }
+    .cover { height:144px; position:relative; overflow:hidden; border-bottom:1px solid var(--line); }
+    .mini-window { margin:20px auto 0; width:86%; height:100%; overflow:hidden; border:1px solid var(--line-strong); border-bottom:0; border-radius:10px 10px 0 0; background:#0b1220; box-shadow:0 12px 30px rgba(0,0,0,.24); }
+    .mini-dots { display:flex; gap:4px; align-items:center; padding:8px 10px; border-bottom:1px solid var(--line); }
+    .mini-dots i { width:6px; height:6px; border-radius:50%; background:rgba(148,163,184,.4); }
+    .mini-line { height:5px; border-radius:99px; background:rgba(148,163,184,.2); }
+    .hero-grid { background-image:linear-gradient(rgba(148,163,184,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(148,163,184,.035) 1px,transparent 1px);background-size:48px 48px;mask-image:linear-gradient(to bottom,black,transparent 85%); }
+    .skeleton { background:linear-gradient(90deg,rgba(148,163,184,.05) 25%,rgba(148,163,184,.11) 37%,rgba(148,163,184,.05) 63%);background-size:800px 100%;animation:shimmer 1.6s linear infinite;border-radius:8px; }
+    @keyframes shimmer { to { background-position:800px 0; } }
+    @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important; } }
+  </style>
+</head>
+<body>
+  <header class="sticky top-0 z-30 bg-slate-950/85 backdrop-blur-xl border-b" style="border-color:var(--line)">
+    <div class="max-w-[1200px] mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-3">
+      <div class="flex items-center gap-2 sm:gap-3 min-w-0">
+        <a href="/" class="flex items-center gap-2 no-underline shrink-0" style="color:var(--ink)">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" fill="#4267ff"/>
+            <circle cx="6" cy="8" r="2.2" fill="#4267ff" opacity=".55"/>
+            <circle cx="18" cy="8" r="2.2" fill="#4267ff" opacity=".55"/>
+            <circle cx="7" cy="16" r="2.2" fill="#4267ff" opacity=".4"/>
+            <circle cx="17" cy="16" r="2.2" fill="#4267ff" opacity=".4"/>
+          </svg>
+          <span class="font-semibold tracking-tight">Prompt2App</span>
+        </a>
+        <nav class="hidden sm:flex items-center gap-1 ml-2" aria-label="主导航">
+          <a href="/" class="nav-pill active">首页</a>
+          <a href="/#showcase" class="nav-pill">预置成品</a>
+          <a href="/dashboard#mine" class="nav-pill">我的项目</a>
+        </nav>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        <span id="user-label" class="hidden sm:inline text-[12px]" style="color:var(--ink-muted)"></span>
+        <button type="button" id="auth-btn" onclick="authAction()" class="btn-brand">登录 / 注册</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="pb-16">
+    <div id="guest-banner" class="hidden max-w-[1200px] mx-auto px-4 sm:px-6 pt-5">
+      <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-slate-900/80 px-4 py-3 text-[12px]" style="border-color:var(--line);color:var(--ink-muted)">
+        <span class="flex items-center gap-2">
+          <span class="h-1.5 w-1.5 rounded-full bg-amber-600"></span>
+          当前为游客模式：可浏览预置成品；生成新应用需要登录。
+        </span>
+        <button type="button" onclick="authAction()" class="font-medium" style="color:var(--brand)">免费注册 / 登录</button>
+      </div>
+    </div>
+
+    <section class="relative overflow-hidden px-4 pt-14 pb-12 sm:px-6 sm:pt-20">
+      <div class="hero-grid pointer-events-none absolute inset-x-0 top-0 h-[34rem]"></div>
+      <div class="relative mx-auto max-w-[820px] text-center">
+        <div class="mb-6 inline-flex items-center gap-2 rounded-full border bg-slate-900/80 px-3 py-1.5 text-[11px]" style="border-color:var(--line-strong);color:var(--ink-muted)">
+          <span id="service-dot" class="h-1.5 w-1.5 rounded-full bg-slate-500"></span>
+          <span id="service-status" role="status">正在连接后端服务…</span>
+        </div>
+        <h1 class="text-[34px] sm:text-[48px] font-semibold tracking-tight leading-[1.15]" style="color:var(--ink)">
+          一句话，把灵感变成<br class="sm:hidden" /><span class="text-sky-400">真正能用的应用</span>
+        </h1>
+        <p class="mx-auto mt-4 max-w-[560px] text-[14px] sm:text-[15px] leading-6" style="color:var(--ink-muted)">
+          多个 AI Agent 协作拆解需求、编写代码并检查质量，生成后可在沙盒中即时运行与迭代。
+        </p>
+
+        <div class="mx-auto mt-9 max-w-[760px] text-left">
+          <div class="composer p-4">
+            <textarea id="prompt" rows="3" maxlength="400" aria-label="应用需求描述"
+              placeholder="描述你想做的应用，例如：记录每月支出、按类别汇总并支持筛选的记账本"
+              class="w-full min-h-[96px] resize-none border-0 outline-none bg-transparent text-[15px] leading-6"
+              style="color:var(--ink)"
+              oninput="onPromptInput()"
+              onkeydown="if((event.metaKey||event.ctrlKey)&&event.key==='Enter'){event.preventDefault();startGenerate();}"></textarea>
+            <div class="flex items-center justify-between gap-3 mt-2">
+              <span id="counter" class="text-[11px]" style="color:var(--ink-faint)" aria-live="polite">0/400 · ⌘/Ctrl + Enter 生成</span>
+              <button type="button" id="go-btn" onclick="startGenerate()" class="btn-brand shrink-0" disabled>开始生成 →</button>
+            </div>
+          </div>
+          <div class="mt-4 flex flex-wrap justify-center gap-2" aria-label="创作示例">
+            <button type="button" class="chip" onclick="fillPrompt(this.dataset.prompt)" data-prompt="做一个智能房贷计算器，输入房价、首付比例、利率和贷款年限，计算月供及总利息">智能房贷计算器</button>
+            <button type="button" class="chip" onclick="fillPrompt(this.dataset.prompt)" data-prompt="做一个任务看板，支持添加任务、在待办/进行中/已完成之间推进，刷新后数据还在">项目管理看板</button>
+            <button type="button" class="chip" onclick="fillPrompt(this.dataset.prompt)" data-prompt="做一个个人主页，展示头像、简介、技能和作品链接，支持编辑并保存">个人主页</button>
+            <button type="button" class="chip" onclick="fillPrompt(this.dataset.prompt)" data-prompt="做一个番茄钟，25分钟专注+5分钟休息，可以暂停重置并记录今日完成次数">专注番茄钟</button>
+            <button type="button" class="chip" onclick="fillPrompt(this.dataset.prompt)" data-prompt="做一个灵感笔记本，支持新建、搜索、颜色分类和删除，数据自动保存">灵感笔记本</button>
+          </div>
+          <p id="busy-note" class="hidden text-center text-[12px] text-amber-300 mt-3" role="status"></p>
+          <p id="home-error" class="hidden text-center text-[13px] text-rose-300 mt-3" role="alert"></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="showcase" class="max-w-[1200px] mx-auto px-4 sm:px-6 pt-4 pb-8 scroll-mt-20">
+      <div class="flex items-end justify-between gap-3 mb-5">
+        <div>
+          <div class="mb-1 text-[10px] tracking-[.14em] text-slate-500 uppercase">Template gallery</div>
+          <div class="flex items-center gap-2">
+            <h2 class="text-[22px] font-semibold m-0">预置成品</h2>
+            <span id="sample-count" class="text-[10px] px-2 py-0.5 rounded-full" style="background:rgba(66,103,255,.12);color:var(--brand)">0</span>
+          </div>
+          <p class="text-[13px] mt-1 m-0" style="color:var(--ink-muted)">直接体验后端内置应用，或将示例描述带入创作框</p>
+        </div>
+        <a href="/dashboard" class="text-[12px] hover:text-sky-300 transition" style="color:var(--ink-muted)">查看全部 →</a>
+      </div>
+      <div id="sample-loading" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3" aria-label="预置应用加载中">
+        <div class="sample-card overflow-hidden"><div class="skeleton h-36"></div><div class="p-4 space-y-3"><div class="skeleton h-3 w-1/3"></div><div class="skeleton h-2 w-4/5"></div></div></div>
+        <div class="sample-card hidden overflow-hidden sm:block"><div class="skeleton h-36"></div><div class="p-4 space-y-3"><div class="skeleton h-3 w-1/3"></div><div class="skeleton h-2 w-4/5"></div></div></div>
+        <div class="sample-card hidden overflow-hidden lg:block"><div class="skeleton h-36"></div><div class="p-4 space-y-3"><div class="skeleton h-3 w-1/3"></div><div class="skeleton h-2 w-4/5"></div></div></div>
+      </div>
+      <div id="samples" class="hidden grid gap-3 sm:grid-cols-2 lg:grid-cols-3"></div>
+      <div id="sample-error" class="hidden mt-4 rounded-xl border border-rose-400/20 bg-rose-400/[.06] p-4 text-sm text-rose-200" role="alert">
+        <span>预置应用加载失败。</span>
+        <button type="button" onclick="loadSamples()" class="ml-2 underline underline-offset-2">重试</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="login-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-sm p-4" role="dialog" aria-modal="true" aria-labelledby="login-title" onclick="if(event.target===this)closeLogin()">
+    <div class="bg-slate-900 rounded-2xl w-full max-w-md border p-6 shadow-2xl" style="border-color:var(--line-strong)">
+      <h1 id="login-title" class="text-lg font-semibold m-0">登录 / 注册</h1>
+      <p class="text-[13px] mt-1" style="color:var(--ink-muted)">新用户名会自动注册</p>
+      <p id="login-hint" class="text-[12px] text-amber-300 mt-2 hidden"></p>
+      <form class="mt-4" onsubmit="event.preventDefault();doLogin()">
+        <label for="login-user" class="block mb-1.5 text-xs" style="color:var(--ink-muted)">用户名</label>
+        <input id="login-user" type="text" autocomplete="username" required placeholder="输入用户名" class="w-full border rounded-lg px-3 py-3 text-base bg-slate-950/70 text-slate-100" style="border-color:var(--line-strong)" />
+        <label for="login-pass" class="block mt-3 mb-1.5 text-xs" style="color:var(--ink-muted)">密码</label>
+        <input id="login-pass" type="password" autocomplete="current-password" required placeholder="输入密码" class="w-full border rounded-lg px-3 py-3 text-base bg-slate-950/70 text-slate-100" style="border-color:var(--line-strong)" />
+        <button id="login-submit" type="submit" class="btn-brand w-full mt-4 py-3">继续</button>
+      </form>
+      <p id="login-error" class="text-rose-300 text-xs text-center mt-2 hidden" role="alert"></p>
+      <button type="button" onclick="closeLogin()" class="w-full text-xs mt-3" style="color:var(--ink-muted)">取消</button>
+    </div>
+  </div>
+
+<script>
+  let token = localStorage.getItem('p2a_token') || '';
+  let username = localStorage.getItem('p2a_user') || '';
+  let pendingPrompt = '';
+  let loginInProgress = false;
+  let promptSubmitting = false;
+  let generationBusy = false;
+  let activeGenerationTitle = '';
+  let busyStatusTimer = null;
+  const EXAMPLES = {
+    mortgage: '做一个智能房贷计算器，输入房价、首付比例、利率和贷款年限，计算月供及总利息',
+    kanban: '做一个任务看板，支持添加任务、在待办/进行中/已完成之间推进，刷新后数据还在',
+    profile: '做一个个人主页，展示头像、简介、技能和作品链接，支持编辑并保存',
+    pomodoro: '做一个番茄钟，25分钟专注+5分钟休息，可以暂停重置并记录今日完成次数',
+    notes: '做一个灵感笔记本，支持新建、搜索、颜色分类和删除，数据自动保存',
+  };
+  const COVERS = {
+    mortgage: { label: '工具', tint: 'rgba(56,189,248,.12)' },
+    kanban: { label: '效率', tint: 'rgba(99,102,241,.12)' },
+    profile: { label: '个人主页', tint: 'rgba(129,140,248,.12)' },
+    pomodoro: { label: '专注', tint: 'rgba(14,165,233,.12)' },
+    notes: { label: '笔记', tint: 'rgba(59,130,246,.12)' },
+  };
+  const DESC = {
+    mortgage: '输入房价、首付与利率，快速估算月供和总利息。',
+    kanban: '添加任务，在待办、进行中与已完成之间推进。',
+    profile: '编辑个人简介、技能和作品，生成专属主页。',
+    pomodoro: '专注与休息计时，记录每日完成次数。',
+    notes: '随手记录灵感，搜索笔记并自动保存。',
+  };
+  const KIND_RULES = [
+    ['mortgage', /房贷|计算器/],
+    ['kanban', /待办|看板|任务/],
+    ['profile', /主页/],
+    ['pomodoro', /番茄|专注/],
+    ['notes', /笔记|灵感|记录/],
+  ];
+  function kindFor(title) {
+    const rule = KIND_RULES.find(([, pattern]) => pattern.test(title || ''));
+    return rule ? rule[0] : 'notes';
+  }
+
+  function esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function onPromptInput() {
+    const el = document.getElementById('prompt');
+    const n = (el.value || '').length;
+    document.getElementById('counter').textContent = n + '/400 · ⌘/Ctrl + Enter 生成';
+    updateGenerateButton();
+  }
+
+  function fillPrompt(text) {
+    const field = document.getElementById('prompt');
+    field.value = text.trim();
+    onPromptInput();
+    field.focus();
+    field.setSelectionRange(field.value.length, field.value.length);
+  }
+
+  function fillPromptForTitle(title) {
+    const prompt = EXAMPLES[kindFor(title)];
+    if (!prompt) return;
+    fillPrompt(prompt);
+    document.getElementById('prompt').scrollIntoView({behavior:'smooth', block:'center'});
+  }
+
+  function updateGenerateButton() {
+    const button = document.getElementById('go-btn');
+    const note = document.getElementById('busy-note');
+    if (!button) return;
+    const valid = document.getElementById('prompt').value.trim().length >= 4;
+    button.disabled = !valid || promptSubmitting || generationBusy;
+    button.textContent = promptSubmitting ? '正在创建…' : generationBusy ? '其他应用生成中…' : '开始生成 →';
+    note.classList.toggle('hidden', !generationBusy);
+    if (generationBusy) note.textContent = '「' + (activeGenerationTitle || '另一个应用') + '」正在生成，完成后即可开始新的创作。';
+  }
+
+  async function refreshGenerationStatus() {
+    try {
+      const res = await fetch('/api/generation/status');
+      if (!res.ok) throw new Error('状态查询失败（' + res.status + '）');
+      const data = await res.json();
+      generationBusy = Boolean(data.busy);
+      activeGenerationTitle = data.title || '';
+      updateGenerateButton();
+    } catch (error) {
+      const note = document.getElementById('busy-note');
+      note.textContent = error.message || '生成状态查询失败';
+      note.classList.remove('hidden');
+    } finally {
+      clearTimeout(busyStatusTimer);
+      busyStatusTimer = setTimeout(refreshGenerationStatus, 5000);
+    }
+  }
+
+  async function loadServiceStatus() {
+    const label = document.getElementById('service-status');
+    const dot = document.getElementById('service-dot');
+    try {
+      const res = await fetch('/api/health');
+      if (!res.ok) throw new Error('服务连接失败（' + res.status + '）');
+      label.textContent = '后端服务已连接';
+      dot.className = 'h-1.5 w-1.5 rounded-full bg-emerald-400';
+    } catch (error) {
+      label.textContent = error.message || '后端服务连接失败';
+      dot.className = 'h-1.5 w-1.5 rounded-full bg-rose-400';
+      label.setAttribute('role', 'alert');
+    }
+  }
+
+  function openLogin() {
+    document.getElementById('login-hint').classList.add('hidden');
+    document.getElementById('login-error').classList.add('hidden');
+    document.getElementById('login-modal').classList.remove('hidden');
+    setTimeout(() => document.getElementById('login-user').focus(), 0);
+  }
+
+  function updateHeader() {
+    const btn = document.getElementById('auth-btn');
+    const label = document.getElementById('user-label');
+    const banner = document.getElementById('guest-banner');
+    if (token) {
+      label.textContent = username || '';
+      btn.textContent = (username || '用户') + ' · 退出';
+      btn.style.background = 'transparent';
+      btn.style.color = 'var(--ink-muted)';
+      btn.style.border = '1px solid var(--line)';
+      banner.classList.add('hidden');
+    } else {
+      label.textContent = '';
+      btn.textContent = '登录 / 注册';
+      btn.style.background = '';
+      btn.style.color = '';
+      btn.style.border = '';
+      banner.classList.remove('hidden');
+    }
+  }
+
+  function authAction() {
+    if (token) {
+      token = ''; username = '';
+      localStorage.removeItem('p2a_token');
+      localStorage.removeItem('p2a_user');
+      location.reload();
+    } else {
+      openLogin();
+    }
+  }
+  function closeLogin() {
+    pendingPrompt = '';
+    document.getElementById('login-modal').classList.add('hidden');
+  }
+
+  async function doLogin() {
+    if (loginInProgress) return;
+    const u = document.getElementById('login-user').value.trim();
+    const p = document.getElementById('login-pass').value;
+    const err = document.getElementById('login-error');
+    const button = document.getElementById('login-submit');
+    err.classList.add('hidden');
+    if (!u || !p) { err.textContent = '请输入用户名和密码'; err.classList.remove('hidden'); return; }
+    loginInProgress = true;
+    button.disabled = true;
+    button.textContent = '正在登录…';
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: u, password: p }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || '登录失败');
+      token = data.token;
+      username = data.username;
+      localStorage.setItem('p2a_token', token);
+      localStorage.setItem('p2a_user', username);
+      const prompt = pendingPrompt;
+      pendingPrompt = '';
+      closeLogin();
+      updateHeader();
+      if (prompt) location.href = '/app?message=' + encodeURIComponent(prompt);
+    } catch (e) {
+      err.textContent = e.message || '登录失败';
+      err.classList.remove('hidden');
+    } finally {
+      loginInProgress = false;
+      button.disabled = false;
+      button.textContent = '继续';
+    }
+  }
+
+  function startGenerate() {
+    const msg = document.getElementById('prompt').value.trim();
+    const err = document.getElementById('home-error');
+    err.classList.add('hidden');
+    if (msg.length < 4) {
+      err.textContent = '请至少输入 4 个字符描述你想做的应用';
+      err.classList.remove('hidden');
+      return;
+    }
+    if (generationBusy || promptSubmitting) return;
+    if (!token) {
+      pendingPrompt = msg;
+      openLogin();
+      document.getElementById('login-hint').textContent = '生成应用需要登录，登录后将自动开始';
+      document.getElementById('login-hint').classList.remove('hidden');
+      return;
+    }
+    promptSubmitting = true;
+    updateGenerateButton();
+    location.href = '/app?message=' + encodeURIComponent(msg);
+  }
+
+  async function loadSamples() {
+    const box = document.getElementById('samples');
+    const loading = document.getElementById('sample-loading');
+    const errorBox = document.getElementById('sample-error');
+    loading.classList.remove('hidden');
+    box.classList.add('hidden');
+    errorBox.classList.add('hidden');
+    try {
+      const res = await fetch('/api/public/showcase');
+      if (!res.ok) throw new Error('预置应用加载失败（' + res.status + '）');
+      const list = await res.json();
+      document.getElementById('sample-count').textContent = String(list.length || 0);
+      box.innerHTML = list.length ? list.map(function (s, i) {
+        const kind = kindFor(s.title);
+        const cover = COVERS[kind];
+        const mock = {
+          mortgage: '<div class="grid grid-cols-[1fr_auto] gap-2"><div class="rounded-lg bg-slate-800 p-2"><div class="mini-line w-12"></div><div class="mt-2 text-[10px] font-semibold">月供估算</div><div class="mt-1 text-[8px] text-slate-500">贷款金额 · 年限 · 利率</div></div><div class="rounded-lg border border-sky-400/20 bg-sky-400/[.06] p-2 text-right"><div class="text-[8px] text-slate-500">每月还款</div><div class="mt-1 text-xs font-semibold text-sky-300">¥ 8,520</div></div><div class="col-span-2 h-1.5 rounded-full bg-slate-800"><div class="h-full w-2/3 rounded-full bg-sky-500/70"></div></div></div>',
+          kanban: '<div class="grid grid-cols-3 gap-1.5">' + ['待办','进行中','完成'].map((label, j) => '<div class="rounded-md bg-slate-800/80 p-1.5"><div class="text-[7px] text-slate-400">' + label + '</div><div class="mt-1.5 h-5 rounded border border-slate-700 bg-slate-900"></div>' + (j === 1 ? '<div class="mt-1 h-4 rounded border border-sky-400/20 bg-sky-400/[.06]"></div>' : '') + '</div>').join('') + '</div>',
+          profile: '<div class="flex items-center gap-3 px-2 py-1"><div class="h-10 w-10 rounded-full border border-sky-300/20 bg-gradient-to-br from-sky-400/50 to-indigo-500/40"></div><div class="flex-1"><div class="mini-line w-16 bg-sky-400/40"></div><div class="mini-line w-24 mt-2"></div><div class="mt-2 h-2 w-14 rounded-full bg-sky-400/30"></div></div></div>',
+          pomodoro: '<div class="flex items-center justify-center gap-4 py-1"><div class="flex h-12 w-12 items-center justify-center rounded-full border-[3px] border-sky-400/80 border-r-slate-700 text-[10px] font-semibold text-sky-200">25:00</div><div><div class="mini-line w-16 bg-sky-400/40"></div><div class="mini-line w-11 mt-2"></div><div class="mt-2 h-3 w-12 rounded bg-sky-500/50"></div></div></div>',
+          notes: '<div class="grid grid-cols-2 gap-2"><div class="rounded-md border border-slate-700 p-2"><div class="mini-line w-12 bg-sky-400/40"></div><div class="mini-line w-full mt-2"></div><div class="mini-line w-4/5 mt-1.5"></div></div><div class="rounded-md bg-sky-400/[.06] p-2"><div class="mini-line w-10 bg-sky-400/40"></div><div class="mini-line w-full mt-2"></div><div class="mini-line w-3/4 mt-1.5"></div></div></div>',
+        }[kind];
+        return '<article class="sample-card group">' +
+          '<a href="/app?session=' + encodeURIComponent(String(s.id)) + '" aria-label="打开应用：' + esc(s.title) + '" class="block no-underline" style="color:inherit">' +
+          '<div class="cover px-5 pt-4" style="background:' + cover.tint + '">' +
+          '<span class="absolute top-3 left-3 rounded-full border px-2.5 py-1 text-[10px] text-slate-300" style="background:rgba(8,13,24,.82);border-color:var(--line-strong)">' + cover.label + '</span>' +
+          '<div class="mini-window"><div class="mini-dots"><i></i><i></i><i></i><span class="mini-line ml-2 w-14"></span></div><div class="p-2.5">' + mock + '</div></div></div>' +
+          '<div class="p-4"><div class="flex items-start justify-between gap-3"><h3 class="m-0 min-w-0 truncate text-[15px] font-semibold">' + esc(s.title) + '</h3><span class="shrink-0 rounded-full border px-2 py-0.5 text-[10px] text-slate-400" style="border-color:var(--line)">预置</span></div>' +
+          '<p class="mt-1.5 mb-0 min-h-10 text-[12px] leading-5" style="color:var(--ink-muted)">' + esc(DESC[kind]) + '</p>' +
+          '<span class="mt-3 inline-flex items-center gap-1 text-[12px] font-medium text-sky-300 group-hover:gap-1.5 transition">打开应用 →</span></div></a>' +
+          '<div class="border-t px-4 py-2.5" style="border-color:var(--line)"><button type="button" class="text-[11px] text-slate-400 hover:text-sky-300 transition" data-title="' + esc(s.title) + '" onclick="fillPromptForTitle(this.dataset.title)">用这个想法开始创作 ↗</button></div>' +
+          '</article>';
+      }).join('') : '<p class="col-span-full rounded-xl border p-8 text-center text-sm" style="border-color:var(--line);color:var(--ink-muted)">暂时没有可展示的预置应用</p>';
+      box.classList.remove('hidden');
+    } catch (e) {
+      errorBox.querySelector('span').textContent = e.message || '预置应用加载失败';
+      errorBox.classList.remove('hidden');
+    } finally {
+      loading.classList.add('hidden');
+    }
+  }
+
+  updateHeader();
+  onPromptInput();
+  const pendingExample = sessionStorage.getItem('p2a_pending_prompt');
+  if (pendingExample) {
+    sessionStorage.removeItem('p2a_pending_prompt');
+    fillPrompt(pendingExample);
+  }
+  loadServiceStatus();
+  refreshGenerationStatus();
+  loadSamples();
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeLogin();
+  });
+  window.addEventListener('beforeunload', function() { clearTimeout(busyStatusTimer); });
+</script>
+</body>
+</html>
