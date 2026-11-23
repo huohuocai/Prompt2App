@@ -144,21 +144,32 @@ def main_test() -> None:
                    headers=headers) if False else None  # object() 不可 JSON 序列化，由 pydantic 拦截
     print("   PUT/GET 状态 OK")
 
-    print("== 9.5 全局生成互斥 ==")
-    assert main._gen_acquire(9999, "互斥测试会话") is True
+    print("== 9.5 用户级生成互斥 ==")
+    user_id = int(main.db.get_token_user(token)["id"])
+    assert main._gen_acquire(user_id, 9999, "当前用户的互斥测试") is True
+    assert main._gen_acquire(user_id, 10000, "当前用户的第二个会话") is False
+    other_login = client.post("/api/login", json={"username": "parallel-check", "password": "abc123"})
+    assert other_login.status_code == 200, other_login.text
+    other_headers = {"Authorization": f"Bearer {other_login.json()['token']}"}
+    other_user_id = int(main.db.get_token_user(other_login.json()["token"])["id"])
+    assert main._gen_status(other_user_id)["busy"] is False
+    other_run = client.post("/api/chat", json={"session_id": None, "message": "并发用户冒烟测试"},
+                            headers=other_headers)
+    assert other_run.status_code == 200, f"其他用户应可并行生成，实际 {other_run.status_code}"
+    assert main._gen_status(user_id)["busy"] is True
     r = client.post("/api/chat", json={"session_id": None, "message": "测试互斥"},
                     headers=headers)
     assert r.status_code == 409, f"占用期间应 409，实际 {r.status_code}"
     assert "正在生成中" in r.json()["detail"]
-    r = client.get("/api/generation/status")
+    r = client.get("/api/generation/status", headers=headers)
     assert r.json()["busy"] is True and r.json()["session_id"] == 9999
-    main._gen_release(9999)
-    r = client.get("/api/generation/status")
+    main._gen_release(user_id, 9999)
+    r = client.get("/api/generation/status", headers=headers)
     assert r.json()["busy"] is False
     r = client.post("/api/chat", json={"session_id": session_id, "message": "把标题改成蓝色"},
                     headers=headers)
     assert r.status_code == 200, f"释放后应恢复可用，实际 {r.status_code}"
-    print("   占用 409 / status 查询 / 释放恢复 OK")
+    print("   同用户串行 / 不同用户并行 / 用户隔离状态查询 OK")
 
     print("== 10. 越权访问隔离 ==")
     r2 = client.post("/api/login", json={"username": "另一位评委", "password": "abc123"})

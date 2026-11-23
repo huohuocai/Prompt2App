@@ -45,7 +45,8 @@ function readError(error) {
 
 function isHtmlDocument(content) {
   const text = String(content || '').trim().replace(/^```(?:html)?\s*/i, '').replace(/\s*```$/, '').trim();
-  return /^(?:<!doctype\s+html\b|<html\b)/i.test(text) && /<\/html\s*>$/i.test(text);
+  return /```(?:html|xhtml)\b[\s\S]*?```/i.test(text)
+    || /(?:<!doctype\s+html\b|<html\b)[\s\S]*<\/html\s*>/i.test(text);
 }
 
 function filterConversationMessages(messages) {

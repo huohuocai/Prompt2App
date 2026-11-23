@@ -387,11 +387,21 @@ async def chat_host_agent(user_msg: str, route: str, ok: bool,
             ],
             max_completion_tokens=2048, prompt_cache_key=prompt_cache_key,
             reasoning_effort="low",
-        tag="host",
-    )
+            tag="host",
+        )
         text = (text or "").strip().strip('"').strip()
-        if text:
+        contains_html_output = bool(
+            re.search(r"```(?:html|xhtml)\b[\s\S]*?```", text, re.IGNORECASE)
+            or re.search(
+                r"(?:<!doctype\s+html\b|<html\b)[\s\S]*?</html\s*>",
+                text,
+                re.IGNORECASE,
+            )
+        )
+        if text and not contains_html_output:
             return text
+        if contains_html_output:
+            logger.warning("Chat Host returned HTML instead of a summary; using the safe fallback")
     except Exception:  # noqa: BLE001
         pass
     if route == "PATCH":

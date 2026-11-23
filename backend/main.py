@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -23,39 +24,43 @@ logger = logging.getLogger("prompt2app")
 logging.basicConfig(level=logging.INFO)
 
 # ==============================================================================
-# 全局生成互斥：同一时刻仅允许一个会话在生成 / PATCH（停止按钮只属当前运行项目）
+# 用户级生成互斥：同一用户一次只生成一个会话，不同用户可并行生成。
 # ==============================================================================
 import time as _time
 
-_active_gen: dict = {"session_id": None, "title": "", "started_at": 0.0}
+_active_gen_by_user: dict[int, dict] = {}
 _GEN_STALE_SECONDS = 15 * 60  # 进程异常残留时最长占用 15 分钟，之后自动放行
 
 
-def _gen_status() -> dict:
-    if (
-        _active_gen["session_id"] is not None
-        and _time.time() - _active_gen["started_at"] > _GEN_STALE_SECONDS
-    ):
-        _gen_release(_active_gen["session_id"])
+def _gen_status(user_id: int) -> dict:
+    active = _active_gen_by_user.get(user_id)
+    if active and _time.time() - active["started_at"] > _GEN_STALE_SECONDS:
+        _gen_release(user_id, active["session_id"])
+        active = None
     return {
-        "busy": _active_gen["session_id"] is not None,
-        "session_id": _active_gen["session_id"],
-        "title": _active_gen["title"],
+        "busy": active is not None,
+        "session_id": active["session_id"] if active else None,
+        "title": active["title"] if active else "",
     }
 
 
-def _gen_acquire(session_id: int, title: str) -> bool:
-    """占用生成权；其他会话（或同会话重入）正在生成时拒绝。"""
-    st = _gen_status()
+def _gen_acquire(user_id: int, session_id: int, title: str) -> bool:
+    """占用该用户的生成权；同一用户的重复生成请求会被拒绝。"""
+    st = _gen_status(user_id)
     if st["busy"]:
         return False
-    _active_gen.update(session_id=session_id, title=title, started_at=_time.time())
+    _active_gen_by_user[user_id] = {
+        "session_id": session_id,
+        "title": title,
+        "started_at": _time.time(),
+    }
     return True
 
 
-def _gen_release(session_id: int) -> None:
-    if _active_gen["session_id"] == session_id:
-        _active_gen.update(session_id=None, title="", started_at=0.0)
+def _gen_release(user_id: int, session_id: int) -> None:
+    active = _active_gen_by_user.get(user_id)
+    if active and active["session_id"] == session_id:
+        _active_gen_by_user.pop(user_id, None)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = PROJECT_ROOT / "static"
@@ -192,9 +197,9 @@ def health() -> dict:
 
 
 @app.get("/api/generation/status")
-def generation_status() -> dict:
-    """全局生成互斥状态：前端据此置灰其他会话的发送按钮。"""
-    return _gen_status()
+def generation_status(user: dict | None = Depends(get_current_user_optional)) -> dict:
+    """返回当前用户自己的生成状态，不暴露其他用户的生成信息。"""
+    return _gen_status(int(user["id"])) if user else {"busy": False, "session_id": None, "title": ""}
 
 
 @app.get("/")
@@ -412,18 +417,20 @@ async def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
     session_id = int(session["id"])
     user_id = int(user["id"])
 
-    # 全局互斥：其他会话正在生成时拒绝（409），同一时刻只允许一个生成/PATCH
-    if not _gen_acquire(session_id, str(session.get("title") or "")):
-        busy = _gen_status()
+    # 同一用户同时只允许一个生成；不同用户之间互不阻塞。
+    if not _gen_acquire(user_id, session_id, str(session.get("title") or "")):
+        busy = _gen_status(user_id)
         raise HTTPException(
             status_code=409,
             detail=f"「{busy['title'] or '另一个应用'}」正在生成中，请稍候再试",
         )
-    history = await asyncio.to_thread(db.get_recent_history, user_id, session_id, HISTORY_ROUNDS)
-    current_code = session.get("latest_code") or None
-
-    # 写入本轮用户消息
-    await asyncio.to_thread(db.save_message, session_id, "user", message)
+    try:
+        history = await asyncio.to_thread(db.get_recent_history, user_id, session_id, HISTORY_ROUNDS)
+        current_code = session.get("latest_code") or None
+        await asyncio.to_thread(db.save_message, session_id, "user", message)
+    except BaseException:
+        _gen_release(user_id, session_id)
+        raise
 
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -476,6 +483,12 @@ async def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
                     yield _sse({"type": "status", "content": content})
                 elif event_type == "text":
                     text = "" if event.get("content") is None else str(event.get("content"))
+                    if _looks_like_html(text) or re.search(r"```(?:html|xhtml)\b", text, re.IGNORECASE):
+                        logger.warning(
+                            "Code content arrived on the assistant text channel (session=%s); omitted",
+                            session_id,
+                        )
+                        continue
                     assistant_parts.append(text)
                     yield _sse({"type": "text", "content": text})
                 elif event_type == "code" and event.get("content"):
@@ -510,7 +523,7 @@ async def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
         finally:
             if not producer.done():
                 producer.cancel()
-            _gen_release(session_id)  # 全局互斥：流结束（完成/断开/异常）即放行
+            _gen_release(user_id, session_id)
             logger.info("[timing] request session=%s total=%.1fs (含 SSE 全程)",
                         session_id, _time.monotonic() - _request_t0)
 
