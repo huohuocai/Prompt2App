@@ -144,6 +144,11 @@ class LLMCallResult:
     model: str
     finish_reason: str | None = None
     was_truncated: bool = False
+    ttfb_ms: float | None = None       # 模型首 token 时间（None = 未建立流）
+    duration_ms: float | None = None   # 调用总耗时
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cached_tokens: int = 0             # >0 视为热缓存命中
 
 
 class ResilientLLMGateway:
@@ -243,6 +248,12 @@ class ResilientLLMGateway:
             params["prompt_cache_key"] = prompt_cache_key
         if cfg.get("supports_reasoning_effort") and reasoning_effort and model.startswith("kimi-k3"):
             params["extra_body"] = {"reasoning_effort": reasoning_effort}
+        if cfg.get("provider") == "siliconflow":
+            # 官方字段：关闭思考模式（默认开启时首 token 前空想可达 3 分钟，Coder 等长生成不可用）。
+            # 注意：非标准字段必须经 extra_body 传递（openai SDK 会拒绝未知顶层参数）
+            extra = params.get("extra_body") or {}
+            extra["enable_thinking"] = False
+            params["extra_body"] = extra
         return params
 
     @staticmethod
@@ -263,7 +274,9 @@ class ResilientLLMGateway:
         max_completion_tokens: int, stream: bool, timeout: float,
         json_mode: bool, prompt_cache_key: str | None, reasoning_effort: str | None,
         on_heartbeat: Callable[[int], Awaitable[None]] | None = None,
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, float | None, dict[str, int]]:
+        """返回 (正文, finish_reason, 首token毫秒, 用量快照{prompt,completion,cached})。"""
+        call_start = time.monotonic()
         cap = cfg.get("max_output_cap")
         effective_max = max_completion_tokens if not cap else min(max_completion_tokens, cap)
         kwargs = self._build_request_params(
@@ -272,13 +285,23 @@ class ResilientLLMGateway:
         )
         kwargs["messages"] = self._sanitize_messages(messages)
         client = self._get_client(cfg["api_key"], cfg["base_url"])
+        ttfb_ms: float | None = None
+        usage_stats = {"prompt": 0, "completion": 0, "cached": 0}
 
         async with _get_llm_semaphore():
             if not stream:
                 resp = await asyncio.wait_for(client.chat.completions.create(**kwargs), timeout=timeout)
                 _record_usage(getattr(resp, "usage", None))
+                u = getattr(resp, "usage", None)
+                if u:
+                    usage_stats = {
+                        "prompt": getattr(u, "prompt_tokens", 0) or 0,
+                        "completion": getattr(u, "completion_tokens", 0) or 0,
+                        "cached": getattr(getattr(u, "prompt_tokens_details", None), "cached_tokens", 0) or 0,
+                    }
+                ttfb_ms = (time.monotonic() - call_start) * 1000
                 choice = resp.choices[0]
-                return getattr(choice.message, "content", None) or "", getattr(choice, "finish_reason", None)
+                return getattr(choice.message, "content", None) or "", getattr(choice, "finish_reason", None), ttfb_ms, usage_stats
 
             response_stream = await asyncio.wait_for(client.chat.completions.create(**kwargs), timeout=_LLM_STREAM_OPEN_TIMEOUT)
             chunks: list[str] = []
@@ -310,6 +333,8 @@ class ResilientLLMGateway:
                             getattr(c, "text", "") or (c.get("text", "") if isinstance(c, dict) else "") for c in piece
                         )
                     if piece:
+                        if ttfb_ms is None:
+                            ttfb_ms = (time.monotonic() - call_start) * 1000  # 首个内容 token 到达
                         chunks.append(piece)
                         total_chars += len(piece)
                         if on_heartbeat and total_chars >= next_heartbeat:
@@ -322,6 +347,12 @@ class ResilientLLMGateway:
                     if asyncio.iscoroutine(res):
                         await res
             _record_usage(usage)
+            if usage:
+                usage_stats = {
+                    "prompt": getattr(usage, "prompt_tokens", 0) or 0,
+                    "completion": getattr(usage, "completion_tokens", 0) or 0,
+                    "cached": getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0,
+                }
 
         text = "".join(chunks).strip()
         if not text:
@@ -332,7 +363,7 @@ class ResilientLLMGateway:
                     "请增大 max_completion_tokens，或为该调用设置 reasoning_effort='low'"
                 )
             raise ValueError(f"模型返回空内容{detail}")
-        return text, finish_reason
+        return text, finish_reason, ttfb_ms, usage_stats
 
     async def _call_provider_with_retry(
         self, cfg: dict, messages: list[dict[str, Any]], *,
@@ -342,6 +373,7 @@ class ResilientLLMGateway:
         on_heartbeat: Callable[[int], Awaitable[None]] | None = None,
     ) -> LLMCallResult:
         """单通道内：冷却水位线 -> 最多 3 次尝试 -> 截断自动续写 1 次。"""
+        call_start = time.monotonic()
         provider_key = cfg["provider"]
         wait_cool = self._cooldown_until.get(provider_key, 0.0) - time.time()
         if 0 < wait_cool <= 6.0:
@@ -350,10 +382,12 @@ class ResilientLLMGateway:
         model = await self.discover_model(cfg)
         last_exc: Exception | None = None
         content, finish_reason = "", None
+        ttfb_ms: float | None = None
+        usage_stats = {"prompt": 0, "completion": 0, "cached": 0}
 
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                content, finish_reason = await self._execute_single_request(
+                content, finish_reason, ttfb_ms, usage_stats = await self._execute_single_request(
                     cfg, model, messages, max_completion_tokens=max_completion_tokens,
                     stream=stream, timeout=timeout, json_mode=json_mode,
                     prompt_cache_key=prompt_cache_key, reasoning_effort=reasoning_effort,
@@ -382,7 +416,7 @@ class ResilientLLMGateway:
                 {"role": "user", "content": "输出因长度上限截断，请紧接着上面最后一个字符继续输出剩余代码直到 </html> 结束，严禁重复已输出内容。"},
             ]
             try:
-                tail, tail_reason = await self._execute_single_request(
+                tail, tail_reason, _tail_ttfb, tail_usage = await self._execute_single_request(
                     cfg, model, cont_msgs, max_completion_tokens=max_completion_tokens,
                     stream=True, timeout=timeout, json_mode=False,
                     prompt_cache_key=prompt_cache_key, reasoning_effort=reasoning_effort,
@@ -390,11 +424,19 @@ class ResilientLLMGateway:
                 )
                 content += tail
                 was_truncated = tail_reason == "length"
+                for key in usage_stats:
+                    usage_stats[key] += tail_usage.get(key, 0)
             except Exception as cont_exc:  # noqa: BLE001
                 logger.warning("[%s] 自动续写失败，保留已生成前半部分: %s", cfg["label"], cont_exc)
 
-        return LLMCallResult(content=content, provider=provider_key, model=model,
-                             finish_reason=finish_reason, was_truncated=was_truncated)
+        return LLMCallResult(
+            content=content, provider=provider_key, model=model,
+            finish_reason=finish_reason, was_truncated=was_truncated,
+            ttfb_ms=ttfb_ms,
+            duration_ms=(time.monotonic() - call_start) * 1000,
+            prompt_tokens=usage_stats["prompt"], completion_tokens=usage_stats["completion"],
+            cached_tokens=usage_stats["cached"],
+        )
 
     async def chat_completion(
         self, messages: list[dict[str, Any]], *,
@@ -402,22 +444,41 @@ class ResilientLLMGateway:
         json_mode: bool = False, prompt_cache_key: str | None = None,
         reasoning_effort: str | None = None, allow_continuation: bool = False,
         on_heartbeat: Callable[[int], Awaitable[None]] | None = None,
+        tag: str = "", channel: str = "auto",
     ) -> LLMCallResult:
-        """统一容灾入口：L2 Kimi -> L3 SiliconFlow -> 抛 LLMUnavailableError（交 L4）。"""
+        """统一容灾入口：L2 Kimi -> L3 SiliconFlow -> 抛 LLMUnavailableError（交 L4）。
+
+        tag   用于 [timing] 日志标注调用方阶段（pm/coder_full/tester/host...）。
+        channel="backup" 时备用通道优先（Coder 等长生成场景：DeepSeek 非重度思考模型出活快），
+        备用失败仍自动回落主通道，容灾语义不变。
+        """
         if not _OPENAI_OK:
             raise LLMUnavailableError("openai 依赖未安装")
-        configs = [c for c in (_kimi_config(), _backup_config()) if c]
+        kimi_cfg, backup_cfg = _kimi_config(), _backup_config()
+        if channel == "backup":
+            configs = [c for c in (backup_cfg, kimi_cfg) if c]
+        else:
+            configs = [c for c in (kimi_cfg, backup_cfg) if c]
         if not configs:
             raise LLMUnavailableError("未配置 KIMI_API_KEY / BACKUP_API_KEY")
         errors: list[str] = []
         for cfg in configs:
             try:
-                return await self._call_provider_with_retry(
+                result = await self._call_provider_with_retry(
                     cfg, messages, max_completion_tokens=max_completion_tokens, stream=stream,
                     timeout=timeout, json_mode=json_mode, prompt_cache_key=prompt_cache_key,
                     reasoning_effort=reasoning_effort, allow_continuation=allow_continuation,
                     on_heartbeat=on_heartbeat,
                 )
+                cache_state = "热缓存" if result.cached_tokens > 0 else "冷缓存"
+                logger.info(
+                    "[timing] tag=%s provider=%s model=%s ttfb=%.1fs dur=%.1fs in=%d out=%d cached=%d(%s)",
+                    tag or "-", result.provider, result.model,
+                    (result.ttfb_ms or 0) / 1000, (result.duration_ms or 0) / 1000,
+                    result.prompt_tokens, result.completion_tokens,
+                    result.cached_tokens, cache_state,
+                )
+                return result
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -429,12 +490,13 @@ class ResilientLLMGateway:
     async def call_llm(
         self, messages: list[dict[str, Any]], *, max_completion_tokens: int = 16384,
         json_mode: bool = False, prompt_cache_key: str | None = None,
-        reasoning_effort: str | None = None,
+        reasoning_effort: str | None = None, tag: str = "", channel: str = "auto",
     ) -> str:
         """轻量非流式便捷入口（PM/Host/Tester/标题等短调用），返回纯文本。"""
         res = await self.chat_completion(
             messages, max_completion_tokens=max_completion_tokens, stream=False, timeout=60.0,
             json_mode=json_mode, prompt_cache_key=prompt_cache_key, reasoning_effort=reasoning_effort,
+            tag=tag, channel=channel,
         )
         return res.content
 

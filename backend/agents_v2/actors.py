@@ -16,7 +16,7 @@ from .common import _PATCH_CODE_CAP, logger, LLMUnavailableError
 from .gateway import _GATEWAY, llm_available
 from .prompts import (
     _CODER_FULL_FIX_SYSTEM, _CODER_FULL_SYSTEM, _CODER_PATCH_SYSTEM,
-    _DESIGN_SPEC_SYSTEM, _HOST_SYSTEM, _MOBILE_VARIANT_SYSTEM,
+    _DESIGN_SPEC_SYSTEM, _HOST_SYSTEM,
     _PM_SYSTEM, _REVIEWER_FIX_SYSTEM, _TESTER_SYSTEM,
 )
 from .results import CoderResult, PMResult, ReviewResult
@@ -112,7 +112,8 @@ async def pm_agent(user_msg: str, current_code: str | None = None, *,
             ],
             max_completion_tokens=2048, json_mode=True, prompt_cache_key=prompt_cache_key,
             reasoning_effort="low",
-        )
+        tag="pm",
+    )
         data = _parse_json_object(raw) or {}
         route = str(data.get("route", "")).upper().strip()
         plan = str(data.get("plan", "")).strip()
@@ -143,6 +144,7 @@ async def design_spec_agent(user_msg: str, plan: str, *,
         ],
         max_completion_tokens=1024, stream=False, timeout=60.0,
         prompt_cache_key=prompt_cache_key, reasoning_effort="low",
+        tag="design_spec", channel="backup",
     )
     return res.content.strip()
 
@@ -172,6 +174,7 @@ async def _coder_full(user_msg: str, history: list[dict], plan: str,
         ],
         max_completion_tokens=32768, stream=True, timeout=180.0,
         prompt_cache_key=prompt_cache_key, allow_continuation=True, on_heartbeat=on_heartbeat,
+        tag="coder_full", channel="backup",
     )
     return res.content
 
@@ -194,6 +197,7 @@ async def _coder_full_fix(user_msg: str, plan: str, design_spec: str,
         ],
         max_completion_tokens=32768, stream=True, timeout=180.0,
         prompt_cache_key=prompt_cache_key, allow_continuation=True, on_heartbeat=on_heartbeat,
+        tag="coder_full_fix", channel="backup",
     )
     return res.content
 
@@ -208,6 +212,7 @@ async def _coder_patch(user_msg: str, current_code: str,
         ],
         max_completion_tokens=8192, stream=True, timeout=120.0,
         prompt_cache_key=prompt_cache_key,
+        tag="coder_patch", channel="backup",
     )
     return res.content
 
@@ -222,6 +227,7 @@ async def _reviewer_fix(user_msg: str, current_code: str, errors: list[str],
         ],
         max_completion_tokens=8192, stream=True, timeout=120.0,
         prompt_cache_key=prompt_cache_key,
+        tag="reviewer_fix", channel="backup",
     )
     return res.content
 
@@ -240,24 +246,6 @@ async def coder_agent(pm: PMResult, user_msg: str, history: list[dict] | None = 
                             prompt_cache_key, on_heartbeat)
     return CoderResult(mode="FULL", raw=raw,
                        code=PatchAndSanitizerEngine.strip_thinking_and_fences(raw))
-
-
-# ==============================================================================
-# Agent 2.7: MobileVariant（桌面版 -> 移动端优先版本，产出 index_mobile.html）
-# ==============================================================================
-async def mobile_variant_agent(code: str, *,
-                               prompt_cache_key: str | None = None,
-                               on_heartbeat: Callable[[int], Awaitable[None]] | None = None) -> str:
-    """把已通过的桌面版应用改写为移动端优先版本；失败抛 LLMUnavailableError 交由上层跳过。"""
-    res = await _GATEWAY.chat_completion(
-        [
-            {"role": "system", "content": _MOBILE_VARIANT_SYSTEM},
-            {"role": "user", "content": f"== 桌面端代码 ==\n```html\n{_truncate_code(code, cap=24000)}\n```"},
-        ],
-        max_completion_tokens=16384, stream=True, timeout=150.0,
-        prompt_cache_key=prompt_cache_key, allow_continuation=True, on_heartbeat=on_heartbeat,
-    )
-    return res.content
 
 
 # ==============================================================================
@@ -370,7 +358,8 @@ async def tester_agent(code: str, user_msg: str, *,
             ],
             max_completion_tokens=2048, json_mode=True, prompt_cache_key=prompt_cache_key,
             reasoning_effort="low",
-        )
+        tag="tester",
+    )
         data = _parse_json_object(raw) or {}
         issues = data.get("issues") or []
         high = [str(i.get("desc", "")).strip() for i in issues
@@ -398,7 +387,8 @@ async def chat_host_agent(user_msg: str, route: str, ok: bool,
             ],
             max_completion_tokens=2048, prompt_cache_key=prompt_cache_key,
             reasoning_effort="low",
-        )
+        tag="host",
+    )
         text = (text or "").strip().strip('"').strip()
         if text:
             return text
@@ -418,7 +408,8 @@ async def suggest_title(user_msg: str, fallback: str = "新应用") -> str:
                 [{"role": "system", "content": "用不超过12个字概括用户需求，只输出标题本身，不要标点、引号或解释。"},
                  {"role": "user", "content": msg[:500]}],
                 max_completion_tokens=128, reasoning_effort="low",
-            )
+        tag="title",
+    )
             title = re.sub(r"\s+", "", raw or "")[:12]
             if title:
                 return title

@@ -68,6 +68,7 @@ def main_test() -> None:
     assert r.status_code == 200, r.text
     events = collect_sse(r)
     types = [e["type"] for e in events]
+    assert types[0] == "session" and events[0]["session_id"] > 0, events
     assert "code" in types and "text" in types and types[-1] == "done", types
     done = events[-1]
     session_id = done["session_id"]

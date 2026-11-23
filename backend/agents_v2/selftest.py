@@ -73,7 +73,8 @@ async def _run_self_test() -> None:
     p_sf = gw._build_request_params(cfg_sf, "deepseek-ai/DeepSeek-V4-Flash", 1024,
                                     stream=True, json_mode=True, prompt_cache_key="k", reasoning_effort="low")
     assert p_sf["max_tokens"] == 1024 and "max_completion_tokens" not in p_sf, "SF token 字段错误"
-    assert "prompt_cache_key" not in p_sf and "extra_body" not in p_sf, "SF 不应携带 Kimi 专属字段"
+    assert "prompt_cache_key" not in p_sf, "SF 不应携带 Kimi 专属字段"
+    assert p_sf.get("extra_body") == {"enable_thinking": False}, "SF 应经 extra_body 关闭思考模式"
     assert p_sf["response_format"] == {"type": "json_object"}, "SF JSON Mode 缺失"
     assert p_sf["stream"] is True and p_sf["stream_options"] == {"include_usage": True}
     p_k = gw._build_request_params(cfg_kimi, "kimi-k3", 1024,

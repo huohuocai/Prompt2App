@@ -43,6 +43,15 @@ function readError(error) {
   return error instanceof Error ? error.message : '请求失败，请稍后重试';
 }
 
+function isHtmlDocument(content) {
+  const text = String(content || '').trim().replace(/^```(?:html)?\s*/i, '').replace(/\s*```$/, '').trim();
+  return /^(?:<!doctype\s+html\b|<html\b)/i.test(text) && /<\/html\s*>$/i.test(text);
+}
+
+function filterConversationMessages(messages) {
+  return (messages || []).filter((message) => !(message.role === 'assistant' && isHtmlDocument(message.content)));
+}
+
 function useLocation() {
   const [location, setLocation] = useState(() => ({
     path: window.location.pathname,
@@ -435,6 +444,7 @@ export default function App() {
   const [prompt, setPrompt] = useState('');
   const [input, setInput] = useState('');
   const [currentSessionId, setCurrentSessionId] = useState(null);
+  const activeSessionIdRef = useRef(null);
   const [sessionTitle, setSessionTitle] = useState('');
   const [sessionOwned, setSessionOwned] = useState(false);
   const [messages, setMessages] = useState([]);
@@ -508,14 +518,15 @@ export default function App() {
     }
   }, []);
 
-  const loadSession = useCallback(async (id, updateUrl = true) => {
+  const loadSession = useCallback(async (id, updateUrl = true, preserveWorkspaceTab = false) => {
     try {
       setSyncState('syncing');
       const detail = await api(`/api/sessions/${id}`);
       const activeUser = userRef.current;
+      activeSessionIdRef.current = Number(detail.id);
       setCurrentSessionId(detail.id);
       setSessionTitle(detail.title || '未命名应用');
-      setMessages(detail.messages || []);
+      setMessages(filterConversationMessages(detail.messages));
       setVersions(detail.versions || []);
       setCode(detail.latest_code || '');
       setMobileCode('');
@@ -537,7 +548,7 @@ export default function App() {
       if (updateUrl) navigate(`/app?session=${id}`);
       setPreviewTab('app');
       setDevice('desktop');
-      setWorkspaceTab(Number(detail.is_public) === 1 ? 'preview' : 'chat');
+      if (!preserveWorkspaceTab) setWorkspaceTab(Number(detail.is_public) === 1 ? 'preview' : 'chat');
       setSyncState('synced');
       setToast('');
     } catch (error) {
@@ -548,6 +559,7 @@ export default function App() {
   }, [navigate, showError]);
 
   const startNew = useCallback(() => {
+    activeSessionIdRef.current = null;
     setCurrentSessionId(null);
     setSessionTitle('');
     setSessionOwned(Boolean(user));
@@ -606,6 +618,13 @@ export default function App() {
     abortRef.current = new AbortController();
     let completedSessionId = targetSession;
     let assistantMessageId = null;
+    let previewOpened = false;
+    const openPreview = () => {
+      if (previewOpened) return;
+      previewOpened = true;
+      setWorkspaceTab('preview');
+      setPreviewTab('app');
+    };
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -625,13 +644,30 @@ export default function App() {
         const data = chunk.split(/\r?\n/).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trimStart()).join('\n');
         if (!data) return;
         const event = JSON.parse(data);
-        if (event.type === 'status') {
+        if (event.type === 'session' && event.session_id) {
+          const sessionId = Number(event.session_id);
+          completedSessionId = sessionId;
+          activeSessionIdRef.current = sessionId;
+          setCurrentSessionId(sessionId);
+          if (event.title) setSessionTitle(event.title);
+          setSessionOwned(true);
+          setSessionIsPublic(false);
+          navigate(`/app?session=${sessionId}`, true);
+          if (sessionId !== Number(currentSessionId)) {
+            loadSessions().catch((error) => showError(readError(error)));
+          }
+        } else if (event.type === 'status') {
           const content = event.content || '';
           const index = stageFor(content);
           if (index >= 0) setStageIndex(index);
           setMessages((previous) => [...previous, { id: `status-${Date.now()}-${Math.random()}`, role: 'status', content }]);
         } else if (event.type === 'text') {
           const content = event.content || '';
+          if (isHtmlDocument(content)) {
+            setCode(content);
+            openPreview();
+            return;
+          }
           if (!assistantMessageId) assistantMessageId = `assistant-${Date.now()}`;
           const id = assistantMessageId;
           setMessages((previous) => {
@@ -642,9 +678,13 @@ export default function App() {
           });
         } else if (event.type === 'code') {
           if (event.file === 'index_mobile.html') setMobileCode(event.content || '');
-          else setCode(event.content || '');
+          else {
+            setCode(event.content || '');
+            openPreview();
+          }
         } else if (event.type === 'done' && event.session_id) {
           completedSessionId = event.session_id;
+          activeSessionIdRef.current = Number(event.session_id);
           setCurrentSessionId(event.session_id);
           navigate(`/app?session=${event.session_id}`, true);
         }
@@ -673,7 +713,7 @@ export default function App() {
       setStageIndex(-1);
       abortRef.current = null;
       await refreshBusy();
-      if (completedSessionId) await loadSession(completedSessionId, false);
+      if (completedSessionId) await loadSession(completedSessionId, false, previewOpened);
       if (user) {
         try { await loadSessions(); } catch { /* The error is shown by the project list surface. */ }
       }
@@ -847,7 +887,7 @@ export default function App() {
       const query = new URLSearchParams(location.search);
       const id = Number(query.get('session'));
       const message = query.get('message');
-      if (id && Number(currentSessionId) !== id) loadSession(id, false);
+      if (id && Number(currentSessionId) !== id && Number(activeSessionIdRef.current) !== id) loadSession(id, false);
       else if (message) {
         if (user) {
           send(message, null);

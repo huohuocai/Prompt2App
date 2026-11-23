@@ -391,6 +391,7 @@ async def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
     message = body.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="消息不能为空")
+    _request_t0 = _time.monotonic()
 
     # 同步 sqlite 调用一律经 to_thread 包装，防阻塞事件循环
     if body.session_id is None:
@@ -461,6 +462,7 @@ async def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
         final_code = current_code
         assistant_saved = False
         try:
+            yield _sse({"type": "session", "session_id": session_id, "title": session.get("title") or ""})
             while True:
                 event = await queue.get()
                 if event is None:
@@ -509,6 +511,8 @@ async def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
             if not producer.done():
                 producer.cancel()
             _gen_release(session_id)  # 全局互斥：流结束（完成/断开/异常）即放行
+            logger.info("[timing] request session=%s total=%.1fs (含 SSE 全程)",
+                        session_id, _time.monotonic() - _request_t0)
 
     return StreamingResponse(
         event_stream(),
