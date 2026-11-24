@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from .checkpoints import CheckpointStore, WorkflowCheckpoint, _get_session_lock
 from .common import _CODE_MIN_LEN, logger
@@ -19,7 +21,9 @@ from .gateway import (
 from .pipeline import run_agent_pipeline, run_build_phase
 from .results import CoderResult, PMResult
 from .sanitizer import PatchAndSanitizerEngine, post_generation_issues, static_js_issues
-from .actors import chat_host_agent, pm_agent, reviewer_agent, tester_agent
+from .actors import (
+    _extract_streamed_json_string, chat_host_agent, pm_agent, reviewer_agent, tester_agent,
+)
 
 _TEST_MOCK_TEMPLATE = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><title>MOCK-TEMPLATE-房贷计算器</title></head>
@@ -120,6 +124,29 @@ async def _run_self_test() -> None:
     assert pm3.need_spec, "复杂应用未触发设计规范标记"
     pm4 = await pm_agent("做个时钟", None)
     assert not pm4.need_spec, "简单应用误触发设计规范"
+    partial_plan = '{"route":"FULL","plan":"1. 页面结构：输入区\\n2. 核心交互'
+    assert _extract_streamed_json_string(partial_plan, "plan") == "1. 页面结构：输入区\n2. 核心交互"
+
+    streamed_plans: list[str] = []
+
+    async def collect_plan(plan: str) -> None:
+        streamed_plans.append(plan)
+
+    async def fake_pm_stream(_messages, **kwargs):
+        assert kwargs["stream"] is True and kwargs["json_mode"] is True
+        await kwargs["on_content"]('{"route":"FULL","plan":"1. 页面')
+        await kwargs["on_content"]('{"route":"FULL","plan":"1. 页面结构\\n2. 核心交互","title":"看板"')
+        return SimpleNamespace(
+            content='{"route":"FULL","plan":"1. 页面结构\\n2. 核心交互","title":"看板","spec":false}',
+        )
+
+    with patch("backend.agents_v2.actors.llm_available", return_value=True), \
+            patch.object(_GATEWAY, "chat_completion", new=fake_pm_stream):
+        streamed_pm = await pm_agent(
+            "做一个任务看板", on_plan_progress=collect_plan,
+        )
+    assert streamed_pm.source == "llm" and streamed_pm.plan.startswith("1. 页面结构")
+    assert len(streamed_plans) == 2 and streamed_plans[-1] == streamed_pm.plan
     restored = PMResult.from_dict({**pm1.to_dict(), "冗余字段": 1})
     assert restored.route == "PATCH" and restored.source == "heuristic" and not restored.need_spec
     print("  ✅ PM 离线路由、复杂度启发式、dict 往返兼容通过")

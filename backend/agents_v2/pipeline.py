@@ -17,7 +17,7 @@ import time
 from typing import Any, AsyncGenerator, Awaitable, Callable, Optional
 
 from .actors import (
-    _coder_full_fix, _reviewer_fix, chat_host_agent, coder_agent,
+    _coder_full_fix, _coder_refine_agent, _reviewer_fix, chat_host_agent, coder_agent,
     design_spec_agent, pm_agent, tester_agent, _heuristic_route,
 )
 from .checkpoints import (
@@ -96,22 +96,45 @@ async def _cancelled_events(user_msg: str, stage_name: str,
 # PM 阶段
 # ==============================================================================
 async def _pm_stage(cp: WorkflowCheckpoint, user_msg: str, history: list[dict],
-                    prompt_cache_key: str | None) -> tuple[list[dict], PMResult]:
-    """PM 阶段：压缩历史 -> 路由（含复杂度判断）-> 落盘 pm_done 检查点。失败自动退化启发式。"""
+                    prompt_cache_key: str | None,
+                    on_event: Callable[[dict], Awaitable[None]] | None = None) -> tuple[list[dict], PMResult]:
+    """PM 阶段：实时发布计划进度，完成路由后落盘检查点；失败自动退化启发式。"""
     _pm_t0 = time.monotonic()
-    events: list[dict] = [{"type": "status", "content": "PM Agent 正在拆解需求..."}]
+
+    events: list[dict] = []
+
+    async def emit(event: dict) -> None:
+        events.append(event)
+        if on_event:
+            await on_event(event)
+
+    await emit({"type": "status", "content": "PM Agent 正在拆解需求..."})
     if not llm_available():
-        events.append({"type": "status", "content": "LLM 通道不可用，将切换至第 4 层离线兜底引擎"})
+        await emit({"type": "status", "content": "LLM 通道不可用，将切换至第 4 层离线兜底引擎"})
     try:
         cp.compressed_history = await ContextCompressor.compress(history, cp.session_id)
     except Exception:  # noqa: BLE001
         cp.compressed_history = ""
+    pm_started = time.monotonic()
+
+    async def on_plan_progress(plan: str) -> None:
+        await emit({"type": "pm_plan", "content": plan})
+
     try:
         pm = await pm_agent(user_msg, cp.base_code, session_id=cp.session_id,
-                            prompt_cache_key=prompt_cache_key)
+                            prompt_cache_key=prompt_cache_key,
+                            on_plan_progress=on_plan_progress)
     except Exception:  # noqa: BLE001 - 最后保险丝
         pm = PMResult(route=_heuristic_route(user_msg, bool(cp.base_code and cp.base_code.strip())),
                       source="heuristic")
+    await emit({
+        "type": "pm_plan_done",
+        "content": pm.plan,
+        "durationMs": round((time.monotonic() - pm_started) * 1000),
+        "source": pm.source,
+        "route": pm.route,
+        "title": pm.title,
+    })
     cp.pm = pm.to_dict()
     cp.route_mode = "PATCH" if (pm.route == "PATCH" and cp.base_code) else "FULL"
     cp.dev_plan = pm.plan
@@ -119,7 +142,9 @@ async def _pm_stage(cp: WorkflowCheckpoint, user_msg: str, history: list[dict],
     CheckpointStore.save(cp)
     pm.run_id = cp.run_id
     label = "（离线启发式路由）" if pm.source == "heuristic" else ""
-    events.append({"type": "status", "content": f"PM Agent 已完成{label}：{pm.display()}"})
+    route_label = "局部修改" if pm.route == "PATCH" else "全新生成"
+    title_label = f"《{pm.title}》" if pm.title else ""
+    await emit({"type": "status", "content": f"PM Agent 已完成{label}：{route_label}{title_label}"})
     logger.info("[timing] stage=pm dur=%.1fs route=%s source=%s",
                 time.monotonic() - _pm_t0, pm.route, pm.source)
     return events, pm
@@ -188,13 +213,16 @@ async def _build_online(
         yield {"type": "status", "content": "已从断点恢复：最终代码就绪，仅补 Tester 与 Chat Host"}
 
     # ---- DesignSpec 阶段（仅 FULL 复杂应用，且无缓存的设计规范）----
-    if final_code is None and route == "FULL" and enable_spec and pm.need_spec and not cp.design_spec:
-        mark("spec_start")
-        yield {"type": "status", "content": "DesignSpec Agent 正在产出设计规范（布局/配色/组件/交互）..."}
-        cp.design_spec = await design_spec_agent(user_msg, pm.plan, prompt_cache_key=prompt_cache_key)
-        mark("spec_end")
-        CheckpointStore.save(cp)
-        yield {"type": "status", "content": f"DesignSpec Agent 已完成：设计规范 {len(cp.design_spec)} 字符"}
+    if final_code is None and route == "FULL" and enable_spec and pm.need_spec:
+        if not cp.design_spec:
+            mark("spec_start")
+            yield {"type": "status", "content": "DesignSpec Agent 正在产出设计规范（布局/配色/组件/交互）..."}
+            cp.design_spec = await design_spec_agent(user_msg, pm.plan, prompt_cache_key=prompt_cache_key)
+            mark("spec_end")
+            CheckpointStore.save(cp)
+            yield {"type": "status", "content": f"DesignSpec Agent 已完成：设计规范 {len(cp.design_spec)} 字符"}
+        if cp.design_spec:
+            yield {"type": "design_spec", "content": cp.design_spec}
 
     # ---- PATCH：Coder(补丁) -> 本地合并门禁 -> 立即预览 ----
     if final_code is None and route == "PATCH":
@@ -304,24 +332,49 @@ async def _build_online(
     if final_code is None:
         raise LLMUnavailableError("流水线未产出任何代码")
 
-    # ---- 立即发出首个预览（首屏优先）----
+    # ---- 立即发出草稿预览（首屏优先）；草稿同时存入版本记录 ----
+    best_code = final_code
     if not first_preview_sent and not (cp.current_step == "reviewer_done"):
-        note = f"增量补丁 ×{merged_patches}" if route == "PATCH" else "全量生成"
+        note = f"增量补丁 ×{merged_patches}" if route == "PATCH" else "草稿版·快速预览"
         yield emit_preview(final_code, "PATCH" if route == "PATCH" else "FULL", note)
         first_preview_sent = True
         mark("first_preview")
-        yield {"type": "status", "content": f"✅ 首个预览已就绪（{dur('first_preview'):.1f}s），Tester 正在后台走查..."}
+        if route == "FULL" and final_code != current_code:
+            yield {"type": "status", "content": f"✅ 草稿预览已就绪（{dur('first_preview'):.1f}s），精修版（更精美的 UI）正在后台生成，完成后将提示你手动切换..."}
+        else:
+            yield {"type": "status", "content": f"✅ 首个预览已就绪（{dur('first_preview'):.1f}s）"}
     if final_code != current_code:
         cp.final_code = final_code
         cp.code_updated = True
         cp.current_step = "reviewer_done"
         CheckpointStore.save(cp)
 
-    # ---- Tester Agent：首个预览已发出后执行；高风险问题回喂一轮修复（仅 FULL）----
-    if enable_tester and final_code and final_code != current_code:
+    # ---- 精修版（FULL 专属）：思考模式出精美版；不自动替换，存版本并提示用户手动切换 ----
+    if route == "FULL" and final_code and final_code != current_code:
+        try:
+            mark("refine_start")
+            yield {"type": "status", "content": "Coder Agent 正在生成精修版（思考模式，约需数分钟）..."}
+            refined_raw = await _coder_refine_agent(user_msg, pm.plan, cp.design_spec,
+                                                    final_code, prompt_cache_key, on_heartbeat)
+            mark("refine_end")
+            r_clean = PatchAndSanitizerEngine.strip_thinking_and_fences(refined_raw)
+            r_ok, r_msg = PatchAndSanitizerEngine.validate_html(r_clean, is_patch=False)
+            r_issues = post_generation_issues(r_clean) if r_ok else [r_msg]
+            if not r_ok:
+                yield {"type": "status", "content": f"Reviewer：精修版未通过结构校验（{r_msg}），保留草稿版为当前版本"}
+            else:
+                for warn in r_issues:
+                    yield {"type": "status", "content": f"精修版告警：{warn}"}
+                yield {"type": "refined", "content": r_clean, "note": "精修版（更精美的 UI）"}
+                best_code = r_clean
+        except LLMUnavailableError as refine_exc:
+            yield {"type": "status", "content": f"精修版生成不可用，保留草稿版为当前版本: {refine_exc}"}
+
+    # ---- Tester Agent：对当前最佳版本（精修版优先）静态走查；高风险回喂一轮修复 ----
+    if enable_tester and best_code and best_code != current_code:
         mark("tester_start")
         yield {"type": "status", "content": "Tester Agent 正在静态走查（交互完整性/边界异常/状态一致性）..."}
-        issues = await tester_agent(final_code, user_msg, prompt_cache_key=prompt_cache_key)
+        issues = await tester_agent(best_code, user_msg, prompt_cache_key=prompt_cache_key)
         mark("tester_end")
         if issues:
             cp.tester_notes = "；".join(issues)
@@ -341,10 +394,8 @@ async def _build_online(
                     f_ok, _f_msg = PatchAndSanitizerEngine.validate_html(f_clean, is_patch=False)
                     f_issues = post_generation_issues(f_clean) if f_ok else []
                     if f_ok and not f_issues:
-                        final_code = f_clean
-                        cp.final_code = final_code
-                        CheckpointStore.save(cp)
-                        yield emit_preview(final_code, "FULL", "测试反馈修复")
+                        best_code = f_clean
+                        yield {"type": "refined", "content": f_clean, "note": "测试反馈修复版"}
                         yield {"type": "status", "content": "Coder 已按测试反馈修复并重新通过本地门禁"}
                     else:
                         why = _f_msg if not f_ok else "；".join(f_issues)
@@ -372,9 +423,10 @@ async def _build_online(
     total = time.monotonic() - t0
     parts = [
         fmt_stage("设计规范", "spec_end", "spec_start"),
-        fmt_stage("生成", "coder_end", "coder_start"),
+        fmt_stage("草稿生成", "coder_end", "coder_start"),
         fmt_stage("修正", "fix_end", "fix_start"),
-        f"首预览 {dur('first_preview'):.1f}s" if "first_preview" in marks else "",
+        f"草稿预览 {dur('first_preview'):.1f}s" if "first_preview" in marks else "",
+        fmt_stage("精修", "refine_end", "refine_start"),
         fmt_stage("Tester", "tester_end", "tester_start"),
         fmt_stage("总结", "host_end", "host_start"),
     ]
@@ -530,6 +582,7 @@ async def run_agent_pipeline(
     prompt_cache_key: str | None = None,
     on_checkpoint: Callable[[str, Any], Awaitable[Any] | Any] | None = None,
     on_heartbeat: Callable[[int], Awaitable[None]] | None = None,
+    on_pm_event: Callable[[dict], Awaitable[None]] | None = None,
     template_lookup: TemplateLookupFn | None = None,
     enable_spec: bool = True,
     enable_tester: bool = True,
@@ -555,9 +608,12 @@ async def run_agent_pipeline(
                 pm.run_id = cp.run_id
                 yield {"type": "status", "content": f"已从断点恢复 PM 方案：{pm.display()}"}
             else:
-                events, pm = await _pm_stage(cp, user_msg, history or [], prompt_cache_key)
-                for ev in events:
-                    yield ev
+                events, pm = await _pm_stage(
+                    cp, user_msg, history or [], prompt_cache_key, on_event=on_pm_event,
+                )
+                if on_pm_event is None:
+                    for ev in events:
+                        yield ev
             pm = await _apply_checkpoint(on_checkpoint, "pm", pm)
             if pm is _ABORT:
                 async for ev in _cancelled_events(user_msg or "", "PM", cp.base_code):

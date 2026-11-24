@@ -69,6 +69,10 @@ def main_test() -> None:
     events = collect_sse(r)
     types = [e["type"] for e in events]
     assert types[0] == "session" and events[0]["session_id"] > 0, events
+    pm_plan = next((e for e in events if e["type"] == "pm_plan_done"), None)
+    assert pm_plan and pm_plan["durationMs"] >= 0, events
+    if pm_plan["source"] == "llm":
+        assert pm_plan["content"], events
     assert "code" in types and "text" in types and types[-1] == "done", types
     done = events[-1]
     session_id = done["session_id"]
@@ -81,6 +85,14 @@ def main_test() -> None:
     r = client.get(f"/api/sessions/{session_id}", headers=headers)
     detail = r.json()
     assert any(m["role"] == "assistant" for m in detail["messages"])
+    saved_pm_plan = any(
+        m["role"] == "assistant" and (m.get("agent") or "").startswith("PM:")
+        for m in detail["messages"]
+    )
+    if pm_plan["source"] == "llm":
+        assert saved_pm_plan and pm_plan["content"], detail["messages"]
+    else:
+        assert not saved_pm_plan and not pm_plan["content"], detail["messages"]
     assert any(m["role"] == "status" for m in detail["messages"])
     assert detail["latest_code"].startswith("<!DOCTYPE html>")
     assert detail["versions"] and detail["versions"][0]["mode"] == "FALLBACK"

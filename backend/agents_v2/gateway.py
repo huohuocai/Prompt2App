@@ -50,7 +50,7 @@ KIMI_MODEL_PREFERENCE = (
 # 硅基流动偏好序：备用通道刻意不选 Kimi 系（主通道故障时回退同厂商失去容灾意义）。
 SILICONFLOW_MODEL_PREFERENCE = (
     "Pro/deepseek-ai/DeepSeek-V4",
-    "deepseek-ai/DeepSeek-V4",
+    "deepseek-ai/DeepSeek-V4.1-Flash",
     "deepseek-ai/DeepSeek-V4-Flash",
     "Pro/zai-org/GLM-5.2",
 )
@@ -235,7 +235,7 @@ class ResilientLLMGateway:
     def _build_request_params(
         self, cfg: dict, model: str, max_completion_tokens: int, *,
         stream: bool, json_mode: bool, prompt_cache_key: str | None,
-        reasoning_effort: str | None,
+        reasoning_effort: str | None, enable_thinking: bool | None = None,
     ) -> dict:
         """Kimi 与 SiliconFlow 参数体系不同，按 provider 显式分通道（差异详见模块文档）。"""
         params: dict[str, Any] = {"model": model, "messages": None, "stream": stream}
@@ -249,10 +249,12 @@ class ResilientLLMGateway:
         if cfg.get("supports_reasoning_effort") and reasoning_effort and model.startswith("kimi-k3"):
             params["extra_body"] = {"reasoning_effort": reasoning_effort}
         if cfg.get("provider") == "siliconflow":
-            # 官方字段：关闭思考模式（默认开启时首 token 前空想可达 3 分钟，Coder 等长生成不可用）。
+            # 官方字段：关闭思考模式（默认开启时首 token 前空想可达 3 分钟，Coder 草稿等长生成不可用）。
+            # 精修版等质量场景可经 enable_thinking=True 显式开启。
             # 注意：非标准字段必须经 extra_body 传递（openai SDK 会拒绝未知顶层参数）
+            thinking = False if enable_thinking is None else enable_thinking
             extra = params.get("extra_body") or {}
-            extra["enable_thinking"] = False
+            extra["enable_thinking"] = thinking
             params["extra_body"] = extra
         return params
 
@@ -274,6 +276,8 @@ class ResilientLLMGateway:
         max_completion_tokens: int, stream: bool, timeout: float,
         json_mode: bool, prompt_cache_key: str | None, reasoning_effort: str | None,
         on_heartbeat: Callable[[int], Awaitable[None]] | None = None,
+        on_content: Callable[[str], Awaitable[None]] | None = None,
+        enable_thinking: bool | None = None,
     ) -> tuple[str, str | None, float | None, dict[str, int]]:
         """返回 (正文, finish_reason, 首token毫秒, 用量快照{prompt,completion,cached})。"""
         call_start = time.monotonic()
@@ -282,6 +286,7 @@ class ResilientLLMGateway:
         kwargs = self._build_request_params(
             cfg, model, effective_max, stream=stream, json_mode=json_mode,
             prompt_cache_key=prompt_cache_key, reasoning_effort=reasoning_effort,
+            enable_thinking=enable_thinking,
         )
         kwargs["messages"] = self._sanitize_messages(messages)
         client = self._get_client(cfg["api_key"], cfg["base_url"])
@@ -310,7 +315,18 @@ class ResilientLLMGateway:
             usage = None
             total_chars, next_heartbeat = 0, _HEARTBEAT_CHARS
             try:
-                async for chunk in response_stream:
+                # 流式不活跃超时：上一个 chunk 到达后 timeout 秒内无新数据即放弃。
+                # 解决上游「连接已建立但服务端永不吐数据」导致流水线永久挂起的问题。
+                stream_iter = response_stream.__aiter__()
+                while True:
+                    try:
+                        chunk = await asyncio.wait_for(stream_iter.__anext__(), timeout=timeout)
+                    except StopAsyncIteration:
+                        break
+                    except (asyncio.TimeoutError, TimeoutError) as exc:
+                        raise TimeoutError(
+                            f"流式响应 {timeout:.0f}s 无数据（上游可能挂起），已放弃等待"
+                        ) from exc
                     chunk_usage = getattr(chunk, "usage", None)
                     if chunk_usage is None and getattr(chunk, "choices", None):
                         chunk_usage = getattr(chunk.choices[0], "usage", None)
@@ -337,6 +353,8 @@ class ResilientLLMGateway:
                             ttfb_ms = (time.monotonic() - call_start) * 1000  # 首个内容 token 到达
                         chunks.append(piece)
                         total_chars += len(piece)
+                        if on_content:
+                            await on_content("".join(chunks))
                         if on_heartbeat and total_chars >= next_heartbeat:
                             next_heartbeat += _HEARTBEAT_CHARS
                             await on_heartbeat(total_chars)
@@ -371,6 +389,8 @@ class ResilientLLMGateway:
         json_mode: bool = False, prompt_cache_key: str | None = None,
         reasoning_effort: str | None = None, allow_continuation: bool = False,
         on_heartbeat: Callable[[int], Awaitable[None]] | None = None,
+        on_content: Callable[[str], Awaitable[None]] | None = None,
+        enable_thinking: bool | None = None,
     ) -> LLMCallResult:
         """单通道内：冷却水位线 -> 最多 3 次尝试 -> 截断自动续写 1 次。"""
         call_start = time.monotonic()
@@ -391,7 +411,8 @@ class ResilientLLMGateway:
                     cfg, model, messages, max_completion_tokens=max_completion_tokens,
                     stream=stream, timeout=timeout, json_mode=json_mode,
                     prompt_cache_key=prompt_cache_key, reasoning_effort=reasoning_effort,
-                    on_heartbeat=on_heartbeat,
+                    on_heartbeat=on_heartbeat, on_content=on_content,
+                    enable_thinking=enable_thinking,
                 )
                 break
             except asyncio.CancelledError:
@@ -420,7 +441,7 @@ class ResilientLLMGateway:
                     cfg, model, cont_msgs, max_completion_tokens=max_completion_tokens,
                     stream=True, timeout=timeout, json_mode=False,
                     prompt_cache_key=prompt_cache_key, reasoning_effort=reasoning_effort,
-                    on_heartbeat=on_heartbeat,
+                    on_heartbeat=on_heartbeat, enable_thinking=enable_thinking,
                 )
                 content += tail
                 was_truncated = tail_reason == "length"
@@ -444,7 +465,8 @@ class ResilientLLMGateway:
         json_mode: bool = False, prompt_cache_key: str | None = None,
         reasoning_effort: str | None = None, allow_continuation: bool = False,
         on_heartbeat: Callable[[int], Awaitable[None]] | None = None,
-        tag: str = "", channel: str = "auto",
+        on_content: Callable[[str], Awaitable[None]] | None = None,
+        tag: str = "", channel: str = "auto", enable_thinking: bool | None = None,
     ) -> LLMCallResult:
         """统一容灾入口：L2 Kimi -> L3 SiliconFlow -> 抛 LLMUnavailableError（交 L4）。
 
@@ -468,7 +490,8 @@ class ResilientLLMGateway:
                     cfg, messages, max_completion_tokens=max_completion_tokens, stream=stream,
                     timeout=timeout, json_mode=json_mode, prompt_cache_key=prompt_cache_key,
                     reasoning_effort=reasoning_effort, allow_continuation=allow_continuation,
-                    on_heartbeat=on_heartbeat,
+                    on_heartbeat=on_heartbeat, on_content=on_content,
+                    enable_thinking=enable_thinking,
                 )
                 cache_state = "热缓存" if result.cached_tokens > 0 else "冷缓存"
                 logger.info(
@@ -491,12 +514,13 @@ class ResilientLLMGateway:
         self, messages: list[dict[str, Any]], *, max_completion_tokens: int = 16384,
         json_mode: bool = False, prompt_cache_key: str | None = None,
         reasoning_effort: str | None = None, tag: str = "", channel: str = "auto",
+        enable_thinking: bool | None = None,
     ) -> str:
         """轻量非流式便捷入口（PM/Host/Tester/标题等短调用），返回纯文本。"""
         res = await self.chat_completion(
             messages, max_completion_tokens=max_completion_tokens, stream=False, timeout=60.0,
             json_mode=json_mode, prompt_cache_key=prompt_cache_key, reasoning_effort=reasoning_effort,
-            tag=tag, channel=channel,
+            tag=tag, channel=channel, enable_thinking=enable_thinking,
         )
         return res.content
 

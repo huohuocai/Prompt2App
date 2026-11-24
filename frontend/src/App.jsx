@@ -1,7 +1,58 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, authHeaders, coverKind, descriptions, examples } from './api.js';
 
-const stages = ['PM 拆解', '设计规范', '桌面端生成', '代码审查', '移动端版本', '静态走查', '回复整理'];
+const stages = [
+  { title: 'PM 拆解需求', detail: '梳理你的目标、核心页面和关键交互，整理成可执行的产品计划。' },
+  { title: '设计规范', detail: '明确页面布局、视觉风格和组件组织方式。复杂需求会在此阶段细化。' },
+  { title: '生成应用', detail: 'Coder 正在编写应用代码；这一步通常最耗时，可以先查看上方的产品计划。' },
+  { title: '代码检查', detail: '检查页面结构、交互逻辑和代码安全性，必要时修正问题。' },
+  { title: '移动端适配', detail: '整理不同屏幕尺寸下的布局表现，确保手机和桌面端易于使用。' },
+  { title: '静态走查', detail: '检查常见边界情况和操作流程，发现问题时会尝试修复。' },
+  { title: '整理交付说明', detail: '汇总本次完成内容，并准备可交互的应用预览。' },
+];
+
+function formatElapsed(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return minutes ? `${minutes}分${String(remainder).padStart(2, '0')}秒` : `${remainder}秒`;
+}
+
+function ProgressiveSteps({ content, animate, variant }) {
+  const [visibleLength, setVisibleLength] = useState(animate ? 0 : content.length);
+  const contentRef = useRef(content);
+  contentRef.current = content;
+
+  useEffect(() => {
+    if (!animate) {
+      setVisibleLength(contentRef.current.length);
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      setVisibleLength((length) => Math.min(contentRef.current.length, length + 2));
+    }, 70);
+    return () => window.clearInterval(timer);
+  }, [animate]);
+
+  const visibleText = content.slice(0, animate ? visibleLength : content.length);
+  const visibleLines = visibleText.split(/\r?\n/).filter((line) => line.trim());
+  const sourceLines = content.split(/\r?\n/).filter((line) => line.trim());
+  const caret = animate && visibleLength < content.length;
+
+  return (
+    <div className={`progressive-steps ${variant}`} aria-live="polite">
+      {visibleLines.map((line, index) => {
+        const complete = index < visibleLines.length - 1 || !caret && visibleLength >= content.length;
+        return <div className={`progressive-step ${complete ? 'complete' : 'active'}`} key={`${index}-${sourceLines[index]?.slice(0, 20)}`}>
+          <span className="progressive-step-number">{complete ? '✓' : String(index + 1).padStart(2, '0')}</span>
+          <span className="progressive-step-text">{line}{caret && index === visibleLines.length - 1 && <i className="plan-caret" aria-hidden="true" />}</span>
+          <small>{complete ? '已整理' : '正在展开'}</small>
+        </div>;
+      })}
+      {!visibleLines.length && animate && <div className="progressive-step active"><span className="progressive-step-number">01</span><span className="progressive-step-text">正在整理内容…</span><small>进行中</small></div>}
+      {sourceLines.length > visibleLines.length && <div className="progressive-step pending"><span className="progressive-step-number">{String(visibleLines.length + 1).padStart(2, '0')}</span><span className="progressive-step-text">后续步骤正在准备</span><small>待展开</small></div>}
+    </div>
+  );
+}
 
 function previewDocument(code, appState) {
   const serializedState = JSON.stringify(appState || null).replace(/<\//g, '<\\/');
@@ -50,7 +101,15 @@ function isHtmlDocument(content) {
 }
 
 function filterConversationMessages(messages) {
-  return (messages || []).filter((message) => !(message.role === 'assistant' && isHtmlDocument(message.content)));
+  return (messages || [])
+    .filter((message) => !(message.role === 'assistant' && isHtmlDocument(message.content)))
+    .map((message) => {
+      if (message.agent === 'DesignSpec') return { ...message, role: 'design' };
+      const pmPlan = String(message.agent || '').match(/^PM(?::(\d+))?$/);
+      return pmPlan
+        ? { ...message, role: 'plan', durationMs: pmPlan[1] ? Number(pmPlan[1]) : undefined }
+        : message;
+    });
 }
 
 function useLocation() {
@@ -324,15 +383,33 @@ function LoginModal({ onClose, onSubmit }) {
   );
 }
 
-function Workbench({ user, sessionTitle, currentSessionId, sessionOwned, isPublic, sessions, messages, input, setInput, generating, busy, stepIndex, code, mobileCode, device, setDevice, previewTab, setPreviewTab, workspaceTab, setWorkspaceTab, files, activeFile, fileContent, versions, onOpenSession, onNewSession, onSend, onStop, onLogin, onLoadFile, onRestoreVersion, onDownload, onOpenExternal, onRefreshPreview, previewFrameRef, previewRevision, appState, syncState }) {
+function Workbench({ user, sessionTitle, currentSessionId, sessionOwned, isPublic, sessions, messages, input, setInput, generating, busy, stepIndex, code, mobileCode, device, setDevice, previewTab, setPreviewTab, workspaceTab, setWorkspaceTab, files, activeFile, fileContent, versions, onOpenSession, onNewSession, onSend, onStop, onLogin, onLoadFile, onRestoreVersion, onDownload, onOpenExternal, onRefreshPreview, previewFrameRef, previewRevision, appState, syncState, refinedOffer, onAcceptRefined, onDismissRefined }) {
   const [expandedStages, setExpandedStages] = useState(false);
+  const [showFullPrompt, setShowFullPrompt] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const chatRef = useRef(null);
+  const lastUserPrompt = [...messages].reverse().find((message) => message.role === 'user')?.content || '';
+  const designSpecMessage = [...messages].reverse().find((message) => message.role === 'design');
+  const activeStage = stepIndex >= 0 ? stages[stepIndex] : null;
   useEffect(() => {
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
   }, [messages, generating]);
+  useEffect(() => {
+    if (!generating) {
+      setElapsedSeconds(0);
+      return undefined;
+    }
+    const startedAt = Date.now();
+    const updateElapsed = () => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => window.clearInterval(timer);
+  }, [generating]);
   const shownCode = device === 'mobile' && mobileCode ? mobileCode : code;
   const previewSrc = useMemo(() => previewDocument(shownCode, appState), [shownCode, appState]);
-  const activeStage = stepIndex >= 0 ? stages[stepIndex] : '准备生成';
+  const shownPrompt = showFullPrompt || lastUserPrompt.length <= 150
+    ? lastUserPrompt
+    : `${lastUserPrompt.slice(0, 150)}…`;
   return (
     <main className={`workbench ${isPublic ? 'readonly-workbench' : ''}`}>
       {!isPublic && <aside className="workbench-sidebar">
@@ -364,16 +441,39 @@ function Workbench({ user, sessionTitle, currentSessionId, sessionOwned, isPubli
         {!isPublic && workspaceTab === 'chat' && <section className="chat-panel">
         {generating && <div className="progress-card">
           <button className="progress-toggle" onClick={() => setExpandedStages((open) => !open)} aria-expanded={expandedStages}>
-            <span className="progress-indicator"><i className="pulse-dot" /> Agent 正在协作</span><b>{activeStage}</b><span className="progress-track"><i style={{ width: `${Math.max(8, ((stepIndex + 1) / stages.length) * 100)}%` }} /></span><span className="progress-expand">{expandedStages ? '收起' : '查看阶段'}⌄</span>
+            <span className="progress-indicator"><i className="pulse-dot" /> 正在为你构建</span><b>{activeStage?.title || '准备生成'}</b><span className="progress-time">已等待 {formatElapsed(elapsedSeconds)}</span><span className="progress-track"><i style={{ width: `${Math.max(8, ((stepIndex + 1) / stages.length) * 100)}%` }} /></span><span className="progress-expand">{expandedStages ? '收起' : '查看进度'}⌄</span>
           </button>
-          {expandedStages && <div className="stage-list">{stages.map((stage, index) => <div className={`stage-item ${index < stepIndex ? 'done' : index === stepIndex ? 'active' : ''}`} key={stage}><i>{index < stepIndex ? '✓' : String(index + 1).padStart(2, '0')}</i><span>{stage}</span><small>{index < stepIndex ? '已完成' : index === stepIndex ? '进行中' : '等待中'}</small></div>)}</div>}
+          {lastUserPrompt && <div className="prompt-receipt">
+            <span>本轮需求</span>
+            <p>{shownPrompt}</p>
+            {lastUserPrompt.length > 150 && <button type="button" onClick={() => setShowFullPrompt((expanded) => !expanded)}>{showFullPrompt ? '收起' : '查看完整需求'}</button>}
+          </div>}
+          {activeStage && <div className="current-stage-note"><span className="stage-note-icon">✦</span><span><b>{activeStage.title}</b><small>{activeStage.detail}</small></span></div>}
+          {expandedStages && <div className="stage-list">{stages.map((stage, index) => <div className={`stage-item ${index < stepIndex ? 'done' : index === stepIndex ? 'active' : ''}`} key={stage.title}><i>{index < stepIndex ? '✓' : String(index + 1).padStart(2, '0')}</i><span><b>{stage.title}</b><small>{stage.detail}</small></span><em>{index < stepIndex ? '已完成' : index === stepIndex ? '进行中' : '待开始'}</em></div>)}</div>}
         </div>}
         {busy?.busy && Number(busy.session_id) !== Number(currentSessionId) && <div className="global-busy-note" role="status">「{busy.title || '其他应用'}」正在生成，完成后可继续操作。</div>}
+        {refinedOffer && <div className="refined-banner" role="status">
+          <div className="refined-banner-text"><b>✨ 精修版已就绪</b><span>{refinedOffer.note || '更精美的 UI'}（已存入版本记录，草稿版可随时回滚）</span></div>
+          <div className="refined-banner-actions">
+            <button type="button" className="refined-accept" onClick={() => onAcceptRefined(refinedOffer)}>切换到此版本</button>
+            <button type="button" className="refined-dismiss" onClick={onDismissRefined}>保留草稿版</button>
+          </div>
+        </div>}
         <div className="message-list" ref={chatRef}>
           {!messages.length && <div className="chat-welcome"><div className="welcome-orb">✦</div><h2>从一句话开始</h2><p>描述你希望应用解决的问题。你可以随时继续对话，调整布局、功能和风格。</p><div className="suggestion-list">{['加一个数据统计面板', '改成更简洁的深色风格', '增加导出和搜索功能'].map((text) => <button key={text} disabled={generating} onClick={() => setInput(text)}>{text}<span>↗</span></button>)}</div></div>}
           {messages.map((message, index) => <div className={`message message-${message.role}`} key={message.id || `${index}-${message.content?.slice(0, 20)}`}>
             {message.role !== 'status' && <span className="message-avatar">{message.role === 'user' ? user?.username?.slice(0, 1) || '我' : '✦'}</span>}
-            <div className="message-body">{message.role === 'status' ? <div className="status-message"><i />{message.content}</div> : <><b>{message.role === 'user' ? '你' : 'Prompt2App'}</b><p>{message.content}</p></>}</div>
+            <div className="message-body">{message.role === 'status' ? <div className="status-message"><i />{message.content}</div> : <>
+              <b>{message.role === 'user' ? '你' : message.role === 'plan' ? 'PM 产品计划' : message.role === 'design' ? 'Design Agent 设计规范' : 'Prompt2App'}</b>
+              {message.role === 'plan' && <small className="plan-duration">{Number.isFinite(message.durationMs) ? `PM 用时 ${(message.durationMs / 1000).toFixed(1)} 秒` : '正在整理产品计划…'}</small>}
+              {message.role === 'plan' || message.role === 'design'
+                ? <ProgressiveSteps
+                    content={message.content || ''}
+                    animate={generating && (String(message.id).startsWith('pm-plan-') || String(message.id).startsWith('design-spec-'))}
+                    variant={message.role}
+                  />
+                : <p>{message.content}</p>}
+            </>}</div>
           </div>)}
           {generating && <div className="typing-indicator"><i /><i /><i /><span>正在生成与检查代码…</span></div>}
         </div>
@@ -390,6 +490,8 @@ function Workbench({ user, sessionTitle, currentSessionId, sessionOwned, isPubli
 
       {(isPublic || workspaceTab === 'preview') && <section className={`preview-panel ${isPublic ? 'public-preview-panel' : ''}`}>
         <div className="preview-toolbar">
+          {!isPublic && designSpecMessage && <button className="preview-generation-link design-spec-link" type="button" onClick={() => setWorkspaceTab('chat')}><span className="design-spec-glyph">✦</span><span><b>Design Agent 设计规范已生成</b><small>点击查看页面结构、配色与交互方案</small></span><span>↗</span></button>}
+          {!isPublic && generating && !designSpecMessage && <button className="preview-generation-link" type="button" onClick={() => setWorkspaceTab('chat')}><i className="pulse-dot" /><span><b>{activeStage?.title || '正在生成'}</b><small>已等待 {formatElapsed(elapsedSeconds)} · 查看进度与需求</small></span><span>↗</span></button>}
           {!isPublic && <div className="preview-tabs"><button className={previewTab === 'app' ? 'active' : ''} onClick={() => setPreviewTab('app')}>应用</button><button className={previewTab === 'files' ? 'active' : ''} onClick={() => setPreviewTab('files')}>文件 <span>{files.length || ''}</span></button></div>}
           <div className="preview-tools">
             {!isPublic && <select aria-label="版本历史" value="" onChange={(event) => onRestoreVersion(event.target.value)} disabled={!user || !sessionOwned || !currentSessionId || !versions.length}>
@@ -450,6 +552,7 @@ export default function App() {
   const [sessionOwned, setSessionOwned] = useState(false);
   const [messages, setMessages] = useState([]);
   const [versions, setVersions] = useState([]);
+  const [refinedOffer, setRefinedOffer] = useState(null);
   const [files, setFiles] = useState([]);
   const [activeFile, setActiveFile] = useState('');
   const [fileContent, setFileContent] = useState('');
@@ -529,6 +632,7 @@ export default function App() {
       setSessionTitle(detail.title || '未命名应用');
       setMessages(filterConversationMessages(detail.messages));
       setVersions(detail.versions || []);
+      setRefinedOffer(null);
       setCode(detail.latest_code || '');
       setMobileCode('');
       setSessionIsPublic(Number(detail.is_public) === 1);
@@ -619,6 +723,8 @@ export default function App() {
     abortRef.current = new AbortController();
     let completedSessionId = targetSession;
     let assistantMessageId = null;
+    const pmPlanMessageId = `pm-plan-${Date.now()}`;
+    const designSpecMessageId = `design-spec-${Date.now()}`;
     let previewOpened = false;
     const openPreview = () => {
       if (previewOpened) return;
@@ -662,6 +768,28 @@ export default function App() {
           const index = stageFor(content);
           if (index >= 0) setStageIndex(index);
           setMessages((previous) => [...previous, { id: `status-${Date.now()}-${Math.random()}`, role: 'status', content }]);
+        } else if (event.type === 'pm_plan' || event.type === 'pm_plan_done') {
+          const content = event.content || '';
+          const isComplete = event.type === 'pm_plan_done';
+          setMessages((previous) => {
+            const existing = previous.some((item) => item.id === pmPlanMessageId);
+            const planMessage = {
+              id: pmPlanMessageId,
+              role: 'plan',
+              content,
+              ...(isComplete ? { durationMs: event.durationMs, source: event.source } : {}),
+            };
+            return existing
+              ? previous.map((item) => item.id === pmPlanMessageId ? { ...item, ...planMessage } : item)
+              : [...previous, planMessage];
+          });
+        } else if (event.type === 'design_spec') {
+          const content = event.content || '';
+          if (content) {
+            setMessages((previous) => previous.some((item) => item.id === designSpecMessageId)
+              ? previous.map((item) => item.id === designSpecMessageId ? { ...item, content } : item)
+              : [...previous, { id: designSpecMessageId, role: 'design', content }]);
+          }
         } else if (event.type === 'text') {
           const content = event.content || '';
           if (isHtmlDocument(content)) {
@@ -683,6 +811,8 @@ export default function App() {
             setCode(event.content || '');
             openPreview();
           }
+        } else if (event.type === 'refined_ready') {
+          setRefinedOffer({ versionId: event.version_id, note: event.note, chars: event.chars });
         } else if (event.type === 'done' && event.session_id) {
           completedSessionId = event.session_id;
           activeSessionIdRef.current = Number(event.session_id);
@@ -841,6 +971,12 @@ export default function App() {
     }
   }, [currentSessionId, loadSession, sessionOwned, showError]);
 
+  const acceptRefined = useCallback(async (offer) => {
+    setRefinedOffer(null);
+    await restoreVersion(offer?.versionId);
+  }, [restoreVersion]);
+  const dismissRefined = useCallback(() => setRefinedOffer(null), []);
+
   const downloadCode = useCallback(() => {
     const selected = device === 'mobile' && mobileCode ? mobileCode : code;
     if (!selected) return;
@@ -965,7 +1101,7 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Header path={path} user={user} syncState={path === '/app' ? syncState : ''} onNavigate={navigate} onProjects={dashboardAction} onLogin={() => requestLogin()} onLogout={logout} />
+      <Header path={path} user={user} syncState={path === '/app' ? syncState : ''} refinedOffer={refinedOffer} onAcceptRefined={acceptRefined} onDismissRefined={dismissRefined} onNavigate={navigate} onProjects={dashboardAction} onLogin={() => requestLogin()} onLogout={logout} />
       {toast && <div className="toast" role="alert"><span>{toast}</span><button onClick={() => setToast('')} aria-label="关闭错误提示">×</button></div>}
       {path === '/' && <HomePage user={user} showcase={showcase} showcaseLoading={showcaseLoading} showcaseError={showcaseError} prompt={prompt} setPrompt={setPrompt} busy={busy} onCreate={() => createFromPrompt()} onUsePrompt={useExample} onOpen={openPublic} onRetry={loadShowcase} onLogin={() => requestLogin({ type: 'new' })} apiStatus={apiStatus} />}
       {path === '/dashboard' && <DashboardPage user={user} showcase={showcase} sessions={sessions} loading={sessionsLoading} error={sessionsError} onRefresh={loadDashboard} onOpen={openSession} onDelete={deleteSession} onLogin={() => requestLogin({ type: 'dashboard' })} onCreate={(text) => typeof text === 'string' && text ? useExample(text) : newAction()} />}

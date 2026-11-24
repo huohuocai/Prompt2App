@@ -16,7 +16,7 @@ from .common import _PATCH_CODE_CAP, logger, LLMUnavailableError
 from .gateway import _GATEWAY, llm_available
 from .prompts import (
     _CODER_FULL_FIX_SYSTEM, _CODER_FULL_SYSTEM, _CODER_PATCH_SYSTEM,
-    _DESIGN_SPEC_SYSTEM, _HOST_SYSTEM,
+    _CODER_REFINE_SYSTEM, _DESIGN_SPEC_SYSTEM, _HOST_SYSTEM,
     _PM_SYSTEM, _REVIEWER_FIX_SYSTEM, _TESTER_SYSTEM,
 )
 from .results import CoderResult, PMResult, ReviewResult
@@ -53,6 +53,42 @@ def _parse_json_object(text: str) -> dict | None:
         return obj if isinstance(obj, dict) else None
     except json.JSONDecodeError:
         return None
+
+
+def _extract_streamed_json_string(text: str, key: str) -> str:
+    """从未完成的 JSON 响应中提取指定字符串字段的当前可显示前缀。"""
+    match = re.search(r'"' + re.escape(key) + r'"\s*:\s*"', text)
+    if not match:
+        return ""
+    chars: list[str] = []
+    index = match.end()
+    escapes = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+    while index < len(text):
+        char = text[index]
+        index += 1
+        if char == '"':
+            break
+        if char != "\\":
+            chars.append(char)
+            continue
+        if index >= len(text):
+            break
+        escape = text[index]
+        index += 1
+        if escape == "u":
+            hex_value = text[index:index + 4]
+            if len(hex_value) < 4:
+                break
+            try:
+                chars.append(chr(int(hex_value, 16)))
+            except ValueError:
+                break
+            index += 4
+        elif escape in escapes:
+            chars.append(escapes[escape])
+        else:
+            break
+    return "".join(chars)
 
 
 def _heuristic_route(user_msg: str, has_code: bool) -> str:
@@ -96,24 +132,38 @@ def _summarize_code_metadata(code: str | None) -> str:
 # ==============================================================================
 async def pm_agent(user_msg: str, current_code: str | None = None, *,
                    session_id: int | None = None,
-                   prompt_cache_key: str | None = None) -> PMResult:
+                   prompt_cache_key: str | None = None,
+                   on_plan_progress: Callable[[str], Awaitable[None]] | None = None) -> PMResult:
     """意图路由与需求拆解。在线走 JSON Mode（含复杂度 spec 判断）；失败退化为启发式，绝不抛异常。"""
     has_code = bool(current_code and current_code.strip())
     if not llm_available():
         return PMResult(route=_heuristic_route(user_msg, has_code),
                         source="heuristic", need_spec=_need_spec_heuristic(user_msg))
     try:
-        raw = await _GATEWAY.call_llm(
+        last_plan = ""
+
+        async def on_content(snapshot: str) -> None:
+            nonlocal last_plan
+            plan_snapshot = _extract_streamed_json_string(snapshot, "plan")
+            if plan_snapshot != last_plan:
+                last_plan = plan_snapshot
+                if on_plan_progress and plan_snapshot:
+                    await on_plan_progress(plan_snapshot)
+
+        response = await _GATEWAY.chat_completion(
             [
                 {"role": "system", "content": _PM_SYSTEM},
                 {"role": "user", "content": "【路由任务】请根据消息末尾给出的信息决策，只输出路由 JSON。\n\n已有代码："
                  + ("有：" + _summarize_code_metadata(current_code) if has_code else "无")
                  + "\n\n用户消息：\n" + user_msg},
             ],
+            stream=True,
             max_completion_tokens=2048, json_mode=True, prompt_cache_key=prompt_cache_key,
             reasoning_effort="low",
-        tag="pm",
-    )
+            on_content=on_content,
+            tag="pm",
+        )
+        raw = response.content
         data = _parse_json_object(raw) or {}
         route = str(data.get("route", "")).upper().strip()
         plan = str(data.get("plan", "")).strip()
@@ -246,6 +296,31 @@ async def coder_agent(pm: PMResult, user_msg: str, history: list[dict] | None = 
                             prompt_cache_key, on_heartbeat)
     return CoderResult(mode="FULL", raw=raw,
                        code=PatchAndSanitizerEngine.strip_thinking_and_fences(raw))
+
+
+async def _coder_refine_agent(user_msg: str, plan: str, design_spec: str,
+                              draft_code: str, prompt_cache_key: str | None,
+                              on_heartbeat: Callable[[int], Awaitable[None]] | None) -> str:
+    """精修版生成：基于草稿产出更精美的 UI（思考模式开启，质量优先；耗时分钟级）。"""
+    blocks = [
+        "== 草稿应用代码（已可运行，请在其基础上精修）==\n```html\n" + _truncate_code(draft_code, cap=24000) + "\n```",
+    ]
+    if design_spec:
+        blocks.append(f"== 设计规范（保持遵循）==\n{design_spec}")
+    elif plan:
+        blocks.append(f"== PM 实现要点 ==\n{plan}")
+    blocks.append(f"== 原始用户需求 ==\n{user_msg}")
+    res = await _GATEWAY.chat_completion(
+        [
+            {"role": "system", "content": _CODER_REFINE_SYSTEM},
+            {"role": "user", "content": "\n\n".join(blocks)},
+        ],
+        max_completion_tokens=32768, stream=True, timeout=300.0,
+        prompt_cache_key=prompt_cache_key, allow_continuation=True,
+        on_heartbeat=on_heartbeat,
+        tag="coder_refine", channel="backup", enable_thinking=True,
+    )
+    return res.content
 
 
 # ==============================================================================

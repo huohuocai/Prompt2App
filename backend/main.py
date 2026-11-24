@@ -438,6 +438,9 @@ async def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
         await queue.put({"type": "status",
                          "content": f"⚡ Coder Agent 正在编写代码（已生成 {chars} 字符）..."})
 
+    async def on_pm_event(event: dict) -> None:
+        await queue.put(event)
+
     async def produce() -> None:
         try:
             from .agents import run_agent_pipeline  # agents.py 薄壳 -> agents_v2 包
@@ -450,6 +453,7 @@ async def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
                 session_id=session_id,
                 prompt_cache_key=f"p2a-session-{session_id}",
                 on_heartbeat=on_heartbeat,
+                on_pm_event=on_pm_event,
                 template_lookup=match_seed_template,
             )
             async for event in pipeline:
@@ -481,6 +485,23 @@ async def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
                     content = "" if event.get("content") is None else str(event.get("content"))
                     await asyncio.to_thread(db.save_message, session_id, "status", content)
                     yield _sse({"type": "status", "content": content})
+                elif event_type == "pm_plan":
+                    yield _sse(event)
+                elif event_type == "pm_plan_done":
+                    plan = str(event.get("content") or "").strip()
+                    if plan:
+                        duration_ms = max(0, int(event.get("durationMs") or 0))
+                        await asyncio.to_thread(
+                            db.save_message, session_id, "assistant", plan, f"PM:{duration_ms}",
+                        )
+                    yield _sse(event)
+                elif event_type == "design_spec":
+                    design_spec = str(event.get("content") or "").strip()
+                    if design_spec:
+                        await asyncio.to_thread(
+                            db.save_message, session_id, "assistant", design_spec, "DesignSpec",
+                        )
+                    yield _sse(event)
                 elif event_type == "text":
                     text = "" if event.get("content") is None else str(event.get("content"))
                     if _looks_like_html(text) or re.search(r"```(?:html|xhtml)\b", text, re.IGNORECASE):
@@ -491,6 +512,15 @@ async def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
                         continue
                     assistant_parts.append(text)
                     yield _sse({"type": "text", "content": text})
+                elif event_type == "refined" and event.get("content"):
+                    # 精修版：只存版本记录，不更新 latest_code、不自动替换预览；
+                    # 通知前端提示用户手动切换（草稿版已是当前预览，也在版本记录中）。
+                    code = str(event["content"])
+                    if _looks_like_html(code):
+                        note = str(event.get("note") or "精修版")[:200]
+                        version_id = await asyncio.to_thread(db.record_version, session_id, code, "FULL", note)
+                        yield _sse({"type": "refined_ready", "version_id": version_id,
+                                    "note": note, "chars": len(code)})
                 elif event_type == "code" and event.get("content"):
                     code = str(event["content"])
                     file_name = str(event.get("file") or "index.html")[:64]
